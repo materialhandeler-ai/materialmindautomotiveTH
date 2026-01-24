@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
+from streamlit_autorefresh import st_autorefresh
 from datetime import datetime
 
 # -----------------------
@@ -22,8 +23,8 @@ st.set_page_config(
 st.title("📦 Material Handler Dashboard")
 st.caption("Realtime wire request from cutting machines")
 
-# auto refresh every 5 sec
-st.autorefresh(interval=5000, key="refresh")
+# auto refresh every 5 seconds
+st_autorefresh(interval=5000, key="refresh")
 
 # -----------------------
 # Load dashboard data
