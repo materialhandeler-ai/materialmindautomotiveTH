@@ -7,7 +7,7 @@ from datetime import datetime
 # Supabase
 # -------------------------
 url = st.secrets.get("SUPABASE_URL")
-key = st.secrets.get("SUPABASE_ANON_KEY")
+key = st.secrets.get("SUPABASE_KEY")
 
 if not url or not key:
     st.error("❌ Supabase URL หรือ KEY ไม่ถูกตั้งค่า")
@@ -132,3 +132,4 @@ else:
         .execute()
 
     st.dataframe(pd.DataFrame(res.data))
+
