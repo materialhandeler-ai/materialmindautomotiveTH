@@ -1,21 +1,12 @@
 import streamlit as st
-import pandas as pd
 from supabase import create_client
+from datetime import datetime
 
-# ------------------------
+# -------------------------
 # Config
-# ------------------------
-st.set_page_config(
-    page_title="📦 Material Handler Dashboard",
-    layout="wide"
-)
+# -------------------------
+st.set_page_config(page_title="Material Handler Dashboard", layout="wide")
 
-st.title("📦 Material Handler Dashboard")
-st.caption("Realtime wire request from cutting machines")
-
-# ------------------------
-# Supabase Connection
-# ------------------------
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("SUPABASE_ANON_KEY")
 
@@ -25,63 +16,94 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ------------------------
-# Load Dashboard Data
-# ------------------------
-def load_dashboard():
-    try:
-        res = (
-            supabase
-            .table("v_material_dashboard_pending")
-            .select("*")
-            .execute()
-        )
-        return res.data
-    except Exception as e:
-        st.error("❌ ไม่สามารถดึงข้อมูลจาก Supabase ได้")
-        st.exception(e)
-        return []
+# -------------------------
+# Data loaders (cache)
+# -------------------------
+@st.cache_data(ttl=5)
+def load_pending():
+    res = (
+        supabase
+        .table("v_material_dashboard_pending")
+        .select("*")
+        .order("request_id", desc=False)
+        .execute()
+    )
+    return res.data or []
 
-# ------------------------
-# Confirm Delivery
-# ------------------------
-def confirm_request(request_id: str):
-    try:
-        supabase.table("material_requests") \
-            .update({"status": "DELIVERED"}) \
-            .eq("id", request_id) \
-            .execute()
-        st.success("✅ ยืนยันการจัดส่งเรียบร้อย")
-    except Exception as e:
-        st.error("❌ ไม่สามารถอัปเดตสถานะได้")
-        st.exception(e)
+@st.cache_data(ttl=5)
+def load_delivered():
+    res = (
+        supabase
+        .table("v_material_dashboard_delivered")
+        .select("*")
+        .order("request_id", desc=True)
+        .execute()
+    )
+    return res.data or []
 
-# ------------------------
+def confirm_delivery(request_id: str):
+    return supabase.rpc(
+        "confirm_material_delivery",
+        {"p_request_id": request_id}
+    ).execute()
+
+# -------------------------
 # UI
-# ------------------------
-data = load_dashboard()
+# -------------------------
+st.title("📦 Material Handler Dashboard")
+st.caption("Realtime wire request from cutting machines")
 
-if not data:
-    st.warning("⚠️ ยังไม่มีข้อมูลเรียกวัตถุดิบ")
+mode = st.sidebar.radio(
+    "โหมดการทำงาน",
+    ["⏳ Pending Requests", "📜 Delivered History"],
+)
+
+# -------------------------
+# MODE: PENDING
+# -------------------------
+if mode == "⏳ Pending Requests":
+    data = load_pending()
+
+    if not data:
+        st.info("⚠️ ยังไม่มีรายการรอจัดส่ง")
+    else:
+        for row in data:
+            with st.container(border=True):
+                cols = st.columns([2, 2, 5, 1])
+
+                cols[0].markdown(f"**เครื่อง**\n\n{row['machine_code']}")
+                cols[1].markdown("**สถานะ**\n\n⏳ Pending")
+                cols[2].markdown(f"**สายไฟ / จำนวน**\n\n{row['wire_summary'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
+
+                if cols[3].button("✅ จัดส่ง", key=row["request_id"]):
+                    try:
+                        confirm_delivery(row["request_id"])
+                        st.success("จัดส่งเรียบร้อย")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ จัดส่งไม่สำเร็จ: {e}")
+
+# -------------------------
+# MODE: DELIVERED
+# -------------------------
 else:
-    df = pd.DataFrame(data)
+    data = load_delivered()
 
-    for _, row in df.iterrows():
-        col1, col2, col3, col4, col5 = st.columns([1.5, 1.5, 2, 4, 1])
+    if not data:
+        st.info("📭 ยังไม่มีประวัติการจัดส่ง")
+    else:
+        for row in data:
+            with st.container(border=True):
+                st.markdown(
+                    f"""
+                    **เครื่อง:** {row['machine_code']}  
+                    **สถานะ:** ✅ Delivered  
 
-        with col1:
-            st.write(row["machine_code"])
+                    **สายไฟ / จำนวน:**  
+                    {row['wire_summary'].replace(chr(10), '<br>')}
+                    """,
+                    unsafe_allow_html=True
+                )
 
-        with col2:
-            st.write(row["terminal_pair"])
-
-        with col3:
-            st.markdown("⏳ **PENDING**")
-
-        with col4:
-            st.text(row["wire_summary"])
-
-        with col5:
-            if st.button("✅ Confirm", key=row["request_id"]):
-                confirm_request(row["request_id"])
-                st.rerun()
+st.caption(f"🔄 อัปเดตล่าสุด: {datetime.now().strftime('%H:%M:%S')}")
