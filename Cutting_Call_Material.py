@@ -1,75 +1,97 @@
 import streamlit as st
-from supabase import create_client
 import pandas as pd
+from supabase import create_client
+from datetime import datetime
 
-# -----------------------------
-# CONFIG
-# -----------------------------
+# -----------------------
+# Supabase connection
+# -----------------------
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_ANON_KEY"]
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# -----------------------
+# Page config
+# -----------------------
 st.set_page_config(
-    page_title="📦 Wire Request Dashboard",
+    page_title="Material Handler Dashboard",
     layout="wide"
 )
 
-# -----------------------------
-# SUPABASE
-# -----------------------------
-supabase = create_client(
-    st.secrets["SUPABASE_URL"],
-    st.secrets["SUPABASE_KEY"]
-)
+st.title("📦 Material Handler Dashboard")
+st.caption("Realtime wire request from cutting machines")
 
-st.title("📦 Wire Request Dashboard")
+# auto refresh every 5 sec
+st.autorefresh(interval=5000, key="refresh")
 
-# -----------------------------
-# LOAD DATA
-# -----------------------------
-@st.cache_data(ttl=3)
+# -----------------------
+# Load dashboard data
+# -----------------------
 def load_dashboard():
-    res = supabase.table("v_wire_dashboard") \
-        .select("*") \
-        .order("created_at") \
+    res = (
+        supabase
+        .table("v_wire_dashboard")
+        .select("*")
+        .order("created_at", desc=False)
         .execute()
-    return pd.DataFrame(res.data)
+    )
+    return res.data or []
 
-df = load_dashboard()
+# -----------------------
+# Confirm delivery (RPC)
+# -----------------------
+def confirm_delivery(request_id: str):
+    supabase.rpc(
+        "confirm_wire_delivery",
+        {"p_request_id": request_id}
+    ).execute()
 
-if df.empty:
-    st.success("🎉 ไม่มีรายการรอจัดส่ง")
+# -----------------------
+# UI
+# -----------------------
+data = load_dashboard()
+
+if not data:
+    st.success("🎉 ไม่มีรายการค้างจัดส่ง")
     st.stop()
 
-# -----------------------------
-# FORMAT
-# -----------------------------
-df["เวลา"] = pd.to_datetime(df["created_at"]).dt.strftime("%H:%M")
-df["สายไฟ / จำนวน"] = (
-    df["wire_name"] + " " +
-    df["wire_size"].astype(str) + " " +
-    df["wire_color"] + " : " +
-    df["quantity_meter"].astype(str) + " เมตร"
-)
+df = pd.DataFrame(data)
 
-# -----------------------------
-# TABLE
-# -----------------------------
-st.markdown("""
-| เวลา | เครื่อง | Terminal | สายไฟ / จำนวน | สถานะ | Action |
-|---|---|---|---|---|---|
-""")
+# group by machine + terminal
+grouped = df.groupby(["machine", "terminal"])
 
-for _, row in df.iterrows():
-    c1, c2, c3, c4, c5, c6 = st.columns([1,1,1,4,1,1])
+for (machine, terminal), group in grouped:
+    st.subheader(f"🔧 เครื่อง: {machine} | Terminal: {terminal}")
 
-    c1.write(row["เวลา"])
-    c2.write(row["machine"])
-    c3.write(row["terminal"])
-    c4.markdown(row["สายไฟ / จำนวน"])
-    c5.write("⏳")
+    rows = []
+    for _, r in group.iterrows():
+        wire_text = (
+            f"{r['wire_name']} "
+            f"{r['wire_size']} "
+            f"{r['wire_color']} : "
+            f"{r['quantity_meter']} เมตร"
+        )
+        rows.append({
+            "เวลา": pd.to_datetime(r["created_at"]).strftime("%H:%M"),
+            "สายไฟ / จำนวน": wire_text,
+            "request_id": r["request_id"]
+        })
 
-    if c6.button("✅", key=row["request_id"]):
-        supabase.rpc(
-            "confirm_wire_delivery",
-            {"p_request_id": row["request_id"]}
-        ).execute()
+    display_df = pd.DataFrame(rows)
 
-        st.cache_data.clear()
-        st.rerun()
+    col1, col2 = st.columns([6, 1])
+
+    with col1:
+        st.dataframe(
+            display_df[["เวลา", "สายไฟ / จำนวน"]],
+            use_container_width=True,
+            hide_index=True
+        )
+
+    with col2:
+        for req_id in display_df["request_id"]:
+            if st.button("✅ จัดส่ง", key=req_id):
+                confirm_delivery(req_id)
+                st.success("จัดส่งแล้ว")
+                st.rerun()
