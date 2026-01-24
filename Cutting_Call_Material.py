@@ -24,12 +24,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("❌ Supabase URL หรือ KEY ไม่ถูกตั้งค่าใน Streamlit Secrets")
     st.stop()
 
-try:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-except Exception as e:
-    st.error("❌ ไม่สามารถเชื่อมต่อ Supabase ได้")
-    st.exception(e)
-    st.stop()
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # -------------------------------
 # LOAD DASHBOARD DATA
@@ -40,7 +35,6 @@ def load_dashboard():
             supabase
             .table("v_material_dashboard")
             .select("*")
-            .order("created_at", desc=True)
             .execute()
         )
         return res.data or []
@@ -52,11 +46,11 @@ def load_dashboard():
 # -------------------------------
 # CONFIRM DELIVERY
 # -------------------------------
-def confirm_delivery(request_id):
+def confirm_delivery(request_item_id):
     try:
         supabase.rpc(
             "confirm_wire_delivery",
-            {"p_request_id": request_id}
+            {"p_request_item_id": request_item_id}
         ).execute()
         st.success("✅ ยืนยันการจัดส่งแล้ว")
         time.sleep(0.5)
@@ -81,31 +75,30 @@ else:
 
             with col1:
                 st.write("⏱ เวลา")
-                st.write(
-                    datetime.fromisoformat(row["created_at"]).strftime("%H:%M")
-                )
+                # ถ้า VIEW มี column เวลาอื่น ให้เปลี่ยนตรงนี้
+                st.write(row.get("request_time", "-"))
 
             with col2:
                 st.write("🖥 เครื่อง")
-                st.write(row["machine_code"])
+                st.write(row.get("machine_code", "-"))
 
             with col3:
                 st.write("🔌 Terminal")
-                st.write(row["terminal_pair"])
+                st.write(row.get("terminal_pair", "-"))
 
             with col4:
                 st.write("🧵 สายไฟ / จำนวน")
                 st.markdown(
                     f"""
-                    **{row['wire_type']}**
-                    - ขนาด: {row['wire_size']}
-                    - สี: {row['wire_color']}
-                    - จำนวน: **{row['quantity_meter']} เมตร**
+                    **{row.get('wire_type', '-') }**
+                    - ขนาด: {row.get('wire_size', '-')}
+                    - สี: {row.get('wire_color', '-')}
+                    - จำนวน: **{row.get('quantity_meter', 0)} เมตร**
                     """
                 )
 
             with col5:
-                if not row["is_delivered"]:
+                if not row.get("is_delivered", False):
                     if st.button(
                         "✅",
                         key=f"confirm_{row['request_item_id']}"
@@ -115,7 +108,7 @@ else:
                     st.success("ส่งแล้ว")
 
 # -------------------------------
-# AUTO REFRESH (ปลอดภัย)
+# AUTO REFRESH
 # -------------------------------
 st.divider()
 st.caption(f"🔄 อัปเดตล่าสุด: {datetime.now().strftime('%H:%M:%S')}")
