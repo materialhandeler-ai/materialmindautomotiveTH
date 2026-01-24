@@ -1,120 +1,134 @@
 import streamlit as st
+import pandas as pd
 from supabase import create_client
 from datetime import datetime
 
-st.set_page_config(page_title="Cutting Call Material", layout="wide")
+# -------------------------
+# Supabase
+# -------------------------
+url = st.secrets.get("SUPABASE_URL")
+key = st.secrets.get("SUPABASE_ANON_KEY")
 
-supabase = create_client(
-    st.secrets["SUPABASE_URL"],
-    st.secrets["SUPABASE_ANON_KEY"]
-)
+if not url or not key:
+    st.error("❌ Supabase URL หรือ KEY ไม่ถูกตั้งค่า")
+    st.stop()
+
+supabase = create_client(url, key)
 
 # -------------------------
-# Loaders
+# Helpers
 # -------------------------
-@st.cache_data(ttl=10)
-def load_machines():
-    return supabase.table("machines").select("id,machine_code").execute().data
-
-@st.cache_data(ttl=10)
-def load_terminal_groups():
-    return supabase.table("terminal_groups").select("id,terminal_pair").execute().data
-
 @st.cache_data(ttl=5)
-def load_pending():
-    return supabase.table("v_material_dashboard_pending").select("*").execute().data
+def load_dashboard():
+    res = supabase.table("v_material_dashboard") \
+        .select("*") \
+        .order("request_id", desc=True) \
+        .execute()
+    return res.data or []
 
-@st.cache_data(ttl=5)
-def load_delivered():
-    return supabase.table("v_material_dashboard_delivered").select("*").execute().data
+@st.cache_data(ttl=30)
+def load_staging():
+    return supabase.table("wire_requirements_staging") \
+        .select("*") \
+        .execute().data or []
+
+def call_material(machine, terminal):
+    supabase.rpc(
+        "create_material_request",
+        {
+            "p_machine_code": machine,
+            "p_terminal_pair": terminal
+        }
+    ).execute()
 
 # -------------------------
-# Sidebar
+# UI
 # -------------------------
+st.set_page_config(page_title="Material System", layout="wide")
+
 mode = st.sidebar.radio(
     "โหมดระบบ",
-    [
-        "🔧 เรียกสายไฟ (Cutting)",
-        "📦 Material Handler",
-        "📜 History"
-    ]
+    ["🔧 เรียกสายไฟ (Cutting)", "📦 Material Handler", "📜 History"]
 )
 
-# =========================================================
-# MODE 1: CALL MATERIAL
-# =========================================================
+# =========================
+# 🔧 CUTTING
+# =========================
 if mode == "🔧 เรียกสายไฟ (Cutting)":
     st.header("🔧 เรียกสายไฟเข้าผลิต")
 
-    machines = load_machines()
-    terminals = load_terminal_groups()
+    staging = load_staging()
+    df = pd.DataFrame(staging)
 
-    m_map = {m["machine_code"]: m["id"] for m in machines}
-    t_map = {t["terminal_pair"]: t["id"] for t in terminals}
+    if df.empty:
+        st.info("🕒 ไม่มีงานรอเรียก")
+        st.stop()
 
-    machine = st.selectbox("เลือกเครื่องจักร", m_map.keys())
-    terminal = st.selectbox("เลือกกลุ่ม Terminal", t_map.keys())
+    machine = st.selectbox(
+        "เลือกเครื่องจักร",
+        sorted(df["machine_code"].unique())
+    )
 
-    if st.button("📢 เรียกสายไฟ"):
-        res = supabase.rpc(
-            "create_material_request",
-            {
-                "p_machine_id": m_map[machine],
-                "p_terminal_group_id": t_map[terminal]
-            }
-        ).execute()
+    terminals = df[df["machine_code"] == machine]["terminal_pair"].unique()
+    terminal = st.selectbox("เลือกกลุ่ม Terminal", terminals)
 
-        st.success(f"✅ เรียกสายไฟเรียบร้อย (Request ID: {res.data})")
+    preview = df[
+        (df["machine_code"] == machine) &
+        (df["terminal_pair"] == terminal)
+    ]
+
+    st.subheader("📋 รายการสายไฟ")
+    st.dataframe(
+        preview[[
+            "wire_name",
+            "wire_size",
+            "wire_color",
+            "quantity_meter"
+        ]]
+    )
+
+    if st.button("✅ เรียกสายไฟ"):
+        call_material(machine, terminal)
+        st.success("เรียกสายไฟเรียบร้อย")
         st.cache_data.clear()
 
-# =========================================================
-# MODE 2: MATERIAL HANDLER
-# =========================================================
+# =========================
+# 📦 MATERIAL HANDLER
+# =========================
 elif mode == "📦 Material Handler":
     st.header("📦 Material Handler Dashboard")
+    st.caption("Realtime wire request from cutting machines")
 
-    data = load_pending()
+    data = load_dashboard()
 
     if not data:
-        st.info("ยังไม่มีรายการรอจัดส่ง")
-    else:
-        for r in data:
-            with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([2,2,5,1])
+        st.warning("⚠️ ยังไม่มีข้อมูลเรียกวัตถุดิบ")
+        st.stop()
 
-                c1.write(f"เครื่อง: **{r['machine_code']}**")
-                c2.write("⏳ Pending")
-                c3.markdown(
-                    r["wire_summary"].replace("\n", "<br>"),
-                    unsafe_allow_html=True
-                )
+    df = pd.DataFrame(data)
+    st.dataframe(
+        df[[
+            "machine",
+            "terminal",
+            "wire_detail",
+            "status"
+        ]],
+        use_container_width=True
+    )
 
-                if c4.button("✅", key=r["request_id"]):
-                    supabase.rpc(
-                        "confirm_material_delivery",
-                        {"p_request_id": r["request_id"]}
-                    ).execute()
-                    st.cache_data.clear()
-                    st.rerun()
-
-# =========================================================
-# MODE 3: HISTORY
-# =========================================================
+# =========================
+# 📜 HISTORY
+# =========================
 else:
-    st.header("📜 ประวัติการจัดส่ง")
+    st.header("📜 History")
 
-    data = load_delivered()
-    if not data:
-        st.info("ยังไม่มีข้อมูล")
-    else:
-        for r in data:
-            st.markdown(
-                f"""
-                **เครื่อง:** {r['machine_code']}  
-                **สายไฟ:**  
-                {r['wire_summary'].replace("\n", "<br>")}
-                """,
-                unsafe_allow_html=True
-            )
+    res = supabase.table("material_requests") \
+        .select(
+            "id,status,"
+            "machines(machine_code),"
+            "terminal_groups(terminal_pair)"
+        ) \
+        .order("id", desc=True) \
+        .execute()
 
-st.caption(f"🕒 {datetime.now().strftime('%H:%M:%S')}")
+    st.dataframe(pd.DataFrame(res.data))
