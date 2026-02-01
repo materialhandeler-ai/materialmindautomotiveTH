@@ -2,135 +2,114 @@ import streamlit as st
 from supabase import create_client
 from datetime import datetime
 
-# ----------------------------
-# CONFIG
-# ----------------------------
-st.set_page_config(
-    page_title="Material Handler Dashboard",
-    layout="wide"
+st.set_page_config(page_title="Material Handler System", layout="wide")
+
+supabase = create_client(
+    st.secrets["SUPABASE_URL"],
+    st.secrets["SUPABASE_KEY"]
 )
 
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# ----------------------------
-# SAFE HELPERS
-# ----------------------------
-def safe_select(table, columns="*", filters=None, order=None):
-    try:
-        q = supabase.table(table).select(columns)
-        if filters:
-            for k, v in filters.items():
-                q = q.eq(k, v)
-        if order:
-            q = q.order(order, desc=True)
-        res = q.execute()
-        return res.data or []
-    except Exception:
-        return []
-
-def safe_rpc(name, params):
-    try:
-        return supabase.rpc(name, params).execute().data
-    except Exception:
-        return None
-
-# ----------------------------
-# UI HEADER
-# ----------------------------
-st.title("📦 Material Handler Dashboard")
-st.caption("Realtime wire request from cutting machines")
-
-mode = st.sidebar.radio(
+# ----------------------
+# COMMON
+# ----------------------
+menu = st.sidebar.radio(
     "โหมดระบบ",
-    [
-        "🔧 เรียกสายไฟ (Cutting)",
-        "📦 Material Handler",
-        "📜 History"
-    ]
+    ["🔧 เรียกสายไฟ (Cutting)", "📦 Material Handler", "📜 History"]
 )
 
-# ==========================================================
-# 🔧 MODE 1 : CALL MATERIAL (CUTTING)
-# ==========================================================
-if mode == "🔧 เรียกสายไฟ (Cutting)":
+# ----------------------
+# MODE 1 : CUTTING
+# ----------------------
+if menu == "🔧 เรียกสายไฟ (Cutting)":
+    st.header("🔧 เรียกสายไฟเข้าผลิต")
 
-    st.subheader("🔧 เรียกสายไฟเข้าผลิต")
+    machines = supabase.table("machines").select("machine_code").execute().data
+    machine = st.selectbox("เลือกเครื่องจักร", [m["machine_code"] for m in machines])
 
-    # --- ดึง option จาก wire_requirements_staging เท่านั้น
-    staging = safe_select("wire_requirements_staging")
+    terminals = (
+        supabase
+        .from_("wire_requirements_staging")
+        .select("terminal_pair")
+        .eq("machine_code", machine)
+        .execute()
+        .data
+    )
+    terminal = st.selectbox(
+        "เลือกกลุ่ม Terminal",
+        sorted(list(set(t["terminal_pair"] for t in terminals)))
+    )
 
-    machines = sorted({r["machine_code"] for r in staging if r.get("machine_code")})
-    terminals = sorted({r["terminal_pair"] for r in staging if r.get("terminal_pair")})
+    wires = (
+        supabase
+        .from_("v_cutting_wire_request")
+        .select("*")
+        .eq("machine_code", machine)
+        .eq("terminal_pair", terminal)
+        .execute()
+        .data
+    )
 
-    machine = st.selectbox("เลือกเครื่องจักร", machines)
-    terminal = st.selectbox("เลือกกลุ่ม Terminal", terminals)
-
-    if machine and terminal:
-        rows = [
-            r for r in staging
-            if r["machine_code"] == machine
-            and r["terminal_pair"] == terminal
-        ]
-
-        if rows:
-            st.markdown("📋 รายการสายไฟ")
-            st.dataframe(
-                [
-                    {
-                        "Wire size": r.get("wire_size"),
-                        "Total length (m)": float(r.get("total_length", 0))
-                    }
-                    for r in rows
-                ],
-                use_container_width=True
-            )
-
-            if st.button("✅ ยืนยันเรียกสายไฟ"):
-                result = safe_rpc(
-                    "create_material_request",
-                    {
-                        "p_machine_code": machine,
-                        "p_terminal_pair": terminal
-                    }
-                )
-
-                if result:
-                    st.success("🎉 เรียกสายไฟสำเร็จ")
-                else:
-                    st.warning("⚠️ ไม่มีข้อมูลที่สามารถเรียกได้ (ระบบไม่ error)")
-
-        else:
-            st.info("ยังไม่มี wire requirement สำหรับเงื่อนไขนี้")
-
-# ==========================================================
-# 📦 MODE 2 : MATERIAL HANDLER DASHBOARD
-# ==========================================================
-elif mode == "📦 Material Handler":
-
-    st.subheader("📦 งานที่รอจ่ายสายไฟ")
-
-    dashboard = safe_select("v_material_dashboard")
-
-    if dashboard:
-        st.dataframe(dashboard, use_container_width=True)
+    if not wires:
+        st.warning("ยังไม่มี wire requirement สำหรับเงื่อนไขนี้")
     else:
-        st.info("ไม่มีงานค้างจ่าย")
+        st.dataframe(wires, use_container_width=True)
 
-    st.caption(f"🔄 อัปเดตล่าสุด: {datetime.now().strftime('%H:%M:%S')}")
+        if st.button("✅ ยืนยันเรียกสายไฟ"):
+            req = supabase.table("material_requests").insert({
+                "machine_code": machine,
+                "terminal_pair": terminal
+            }).execute()
 
-# ==========================================================
-# 📜 MODE 3 : HISTORY
-# ==========================================================
-elif mode == "📜 History":
+            req_id = req.data[0]["id"]
 
-    st.subheader("📜 ประวัติการเรียกสายไฟ")
+            for w in wires:
+                supabase.table("material_request_items").insert({
+                    "request_id": req_id,
+                    "wire_name": w["wire_name"],
+                    "wire_size": w["wire_size"],
+                    "wire_color": w["wire_color"],
+                    "total_length": w["total_length"]
+                }).execute()
 
-    history = safe_select("material_requests", order="id")
+            st.success("🎉 เรียกสายไฟเรียบร้อย ส่งถึง Material Handler แล้ว")
 
-    if history:
-        st.dataframe(history, use_container_width=True)
+# ----------------------
+# MODE 2 : MATERIAL HANDLER
+# ----------------------
+elif menu == "📦 Material Handler":
+    st.header("📦 งานรอจ่ายสายไฟ")
+
+    data = supabase.from_("v_material_handler_dashboard").select("*").execute().data
+
+    if not data:
+        st.info("ยังไม่มีงานรอจ่าย")
     else:
-        st.info("ยังไม่มีประวัติการเรียกสายไฟ")
+        st.dataframe(data, use_container_width=True)
+
+        req_ids = list(set(d["request_id"] for d in data))
+        req = st.selectbox("เลือก Request", req_ids)
+
+        if st.button("📤 จ่ายสายไฟ"):
+            supabase.table("material_requests").update(
+                {"status": "ISSUED"}
+            ).eq("id", req).execute()
+
+            st.success("จ่ายสายไฟเรียบร้อย")
+
+# ----------------------
+# MODE 3 : HISTORY
+# ----------------------
+else:
+    st.header("📜 ประวัติการเรียกสายไฟ")
+
+    history = (
+        supabase
+        .from_("material_requests")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+
+    st.dataframe(history, use_container_width=True)
+    st.caption(f"🔄 อัปเดตล่าสุด {datetime.now().strftime('%H:%M:%S')}")
