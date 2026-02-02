@@ -51,40 +51,52 @@ if mode == "🔧 Production / Cutting":
 elif mode == "📦 Material Handler":
     st.title("📦 Material Handler Dashboard")
 
-    data = supabase.table("v_material_handler_dashboard") \
-        .select("*") \
-        .order("requested_at") \
-        .execute().data
+    data = (
+        supabase
+        .table("v_material_handler_dashboard")
+        .select("*")
+        .order("requested_at")
+        .execute()
+        .data
+    )
 
     if not data:
         st.info("No pending requests")
     else:
         for r in data:
             with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
+                c1, c2, c3, c4 = st.columns([2, 3, 2, 2])
 
                 c1.markdown(f"**Machine**: {r['machine_code']}")
                 c2.markdown(f"**Terminal**: {r['terminal_pair']}")
                 c3.markdown(f"**Status**: `{r['status']}`")
 
+                # ===== ACTION BUTTONS =====
                 if r["status"] == "REQUESTED":
-                    if c4.button("🟡 รับงาน", key=f"start_{r['id']}"):
+                    if c4.button(
+                        "🟡 รับงาน",
+                        key=f"start_{r['request_id']}"
+                    ):
                         supabase.table("material_requests") \
                             .update({"status": "IN_PROGRESS"}) \
-                            .eq("id", r["id"]) \
+                            .eq("id", r["request_id"]) \
                             .execute()
                         st.rerun()
 
                 elif r["status"] == "IN_PROGRESS":
-                    if c4.button("✅ ส่งของ", key=f"done_{r['id']}"):
+                    if c4.button(
+                        "✅ ส่งของ",
+                        key=f"done_{r['request_id']}"
+                    ):
                         supabase.table("material_requests") \
                             .update({
                                 "status": "DELIVERED",
                                 "delivered_at": datetime.utcnow().isoformat()
                             }) \
-                            .eq("id", r["id"]) \
+                            .eq("id", r["request_id"]) \
                             .execute()
                         st.rerun()
+
 elif mode == "📜 History":
     st.title("📜 Material Request History")
 
@@ -122,3 +134,4 @@ elif mode == "📜 History":
         ], use_container_width=True)
     else:
         st.info("No history found")
+
