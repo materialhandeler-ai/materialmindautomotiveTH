@@ -12,15 +12,28 @@ st.set_page_config(
     page_title="Material Request System",
     layout="wide"
 )
+
+# ================= MODE SELECT =================
 mode = st.sidebar.radio(
     "🧭 Select Mode",
     ["🔧 Production / Cutting", "📦 Material Handler", "📜 History"]
 )
+
+# =================================================
+# 🔧 PRODUCTION / CUTTING
+# =================================================
 if mode == "🔧 Production / Cutting":
     st.title("🔧 Production – Call Material")
 
-    machines = supabase.table("machines").select("id, machine_code").execute().data
-    terminals = supabase.table("terminal_groups").select("id, terminal_pair").execute().data
+    machines = supabase.table("machines") \
+        .select("id, machine_code") \
+        .order("machine_code") \
+        .execute().data
+
+    terminals = supabase.table("terminal_groups") \
+        .select("id, terminal_pair") \
+        .order("terminal_pair") \
+        .execute().data
 
     machine = st.selectbox(
         "Machine",
@@ -48,22 +61,22 @@ if mode == "🔧 Production / Cutting":
 
         except Exception as e:
             st.error(f"❌ {e}")
+
+# =================================================
+# 📦 MATERIAL HANDLER DASHBOARD
+# =================================================
 elif mode == "📦 Material Handler":
     st.title("📦 Material Handler Dashboard")
 
-    data = (
-        supabase
-        .table("v_material_handler_dashboard")
-        .select("*")
-        .order("requested_at")
-        .execute()
-        .data
-    )
+    rows = supabase.table("v_material_handler_dashboard") \
+        .select("*") \
+        .order("requested_at") \
+        .execute().data
 
-    if not data:
-        st.info("No pending requests")
+    if not rows:
+        st.info("📭 No pending requests")
     else:
-        for r in data:
+        for r in rows:
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([2, 3, 2, 2])
 
@@ -71,7 +84,7 @@ elif mode == "📦 Material Handler":
                 c2.markdown(f"**Terminal**: {r['terminal_pair']}")
                 c3.markdown(f"**Status**: `{r['status']}`")
 
-                # === REQUESTED → IN_PROGRESS ===
+                # ===== ACTION =====
                 if r["status"] == "REQUESTED":
                     if c4.button(
                         "🟡 รับงาน",
@@ -83,7 +96,6 @@ elif mode == "📦 Material Handler":
                             .execute()
                         st.rerun()
 
-                # === IN_PROGRESS → DELIVERED ===
                 elif r["status"] == "IN_PROGRESS":
                     if c4.button(
                         "✅ ส่งของ",
@@ -98,7 +110,9 @@ elif mode == "📦 Material Handler":
                             .execute()
                         st.rerun()
 
-
+# =================================================
+# 📜 HISTORY
+# =================================================
 elif mode == "📜 History":
     st.title("📜 Material Request History")
 
@@ -129,13 +143,10 @@ elif mode == "📜 History":
                 "Machine": r["machines"]["machine_code"],
                 "Terminal Pair": r["terminal_groups"]["terminal_pair"],
                 "Status": r["status"],
-                "Requested": r["requested_at"],
-                "Delivered": r["delivered_at"]
+                "Requested At": r["requested_at"],
+                "Delivered At": r["delivered_at"]
             }
             for r in rows
         ], use_container_width=True)
     else:
-        st.info("No history found")
-
-
-
+        st.info("📭 No history found")
