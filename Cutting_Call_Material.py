@@ -68,47 +68,76 @@ if mode == "🔧 Production / Cutting":
 elif mode == "📦 Material Handler":
     st.title("📦 Material Handler Dashboard")
 
-    rows = supabase.table("v_material_handler_dashboard") \
-        .select("*") \
-        .order("requested_at") \
-        .execute().data
+    # ===== LOAD DATA FROM VIEW =====
+    try:
+        rows = (
+            supabase
+            .table("v_material_handler_dashboard")
+            .select("""
+                request_id,
+                machine_code,
+                terminal_pair,
+                status,
+                requested_at
+            """)
+            .order("requested_at")
+            .execute()
+            .data
+        )
+    except Exception as e:
+        st.error("❌ Load dashboard failed")
+        st.stop()
 
     if not rows:
-        st.info("📭 No pending requests")
-    else:
-        for r in rows:
-            with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([2, 3, 2, 2])
+        st.info("✅ No pending material requests")
+        st.stop()
 
-                c1.markdown(f"**Machine**: {r['machine_code']}")
-                c2.markdown(f"**Terminal**: {r['terminal_pair']}")
-                c3.markdown(f"**Status**: `{r['status']}`")
+    # ===== RENDER CARDS =====
+    for r in rows:
+        with st.container(border=True):
+            col1, col2, col3, col4 = st.columns([2, 3, 2, 2])
 
-                # ===== ACTION =====
-                if r["status"] == "REQUESTED":
-                    if c4.button(
-                        "🟡 รับงาน",
-                        key=f"start_{r['request_id']}"
-                    ):
-                        supabase.table("material_requests") \
-                            .update({"status": "IN_PROGRESS"}) \
-                            .eq("id", r["request_id"]) \
-                            .execute()
+            col1.markdown(f"**Machine**  \n{r['machine_code']}")
+            col2.markdown(f"**Terminal**  \n{r['terminal_pair']}")
+            col3.markdown(f"**Status**  \n`{r['status']}`")
+
+            # ================= ACTION =================
+            if r["status"] == "REQUESTED":
+                if col4.button(
+                    "🟡 รับงาน",
+                    key=f"start_{r['request_id']}"
+                ):
+                    try:
+                        supabase.rpc(
+                            "rpc_handler_start_request",
+                            {"p_request_id": r["request_id"]}
+                        ).execute()
+
+                        st.success("รับงานเรียบร้อย")
                         st.rerun()
 
-                elif r["status"] == "IN_PROGRESS":
-                    if c4.button(
-                        "✅ ส่งของ",
-                        key=f"done_{r['request_id']}"
-                    ):
-                        supabase.table("material_requests") \
-                            .update({
-                                "status": "DELIVERED",
-                                "delivered_at": datetime.utcnow().isoformat()
-                            }) \
-                            .eq("id", r["request_id"]) \
-                            .execute()
+                    except Exception as e:
+                        st.error("❌ รับงานไม่สำเร็จ")
+
+            elif r["status"] == "IN_PROGRESS":
+                if col4.button(
+                    "✅ ส่งของ",
+                    key=f"done_{r['request_id']}"
+                ):
+                    try:
+                        supabase.rpc(
+                            "rpc_handler_finish_request",
+                            {"p_request_id": r["request_id"]}
+                        ).execute()
+
+                        st.success("ส่งของเรียบร้อย")
                         st.rerun()
+
+                    except Exception as e:
+                        st.error("❌ ส่งของไม่สำเร็จ")
+
+            else:
+                col4.markdown("—")
 
 # =================================================
 # 📜 HISTORY
@@ -150,3 +179,4 @@ elif mode == "📜 History":
         ], use_container_width=True)
     else:
         st.info("📭 No history found")
+
