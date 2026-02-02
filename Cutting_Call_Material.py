@@ -71,32 +71,31 @@ elif mode == "📦 Material Handler":
                 c2.markdown(f"**Terminal**: {r['terminal_pair']}")
                 c3.markdown(f"**Status**: `{r['status']}`")
 
+                # === REQUESTED → IN_PROGRESS ===
                 if r["status"] == "REQUESTED":
                     if c4.button(
                         "🟡 รับงาน",
                         key=f"start_{r['request_id']}"
                     ):
-                        supabase.rpc(
-                            "rpc_update_material_status",
-                            {
-                                "p_request_id": r["request_id"],
-                                "p_status": "IN_PROGRESS"
-                            }
-                        ).execute()
+                        supabase.table("material_requests") \
+                            .update({"status": "IN_PROGRESS"}) \
+                            .eq("id", r["request_id"]) \
+                            .execute()
                         st.rerun()
 
+                # === IN_PROGRESS → DELIVERED ===
                 elif r["status"] == "IN_PROGRESS":
                     if c4.button(
                         "✅ ส่งของ",
                         key=f"done_{r['request_id']}"
                     ):
-                        supabase.rpc(
-                            "rpc_update_material_status",
-                            {
-                                "p_request_id": r["request_id"],
-                                "p_status": "DELIVERED"
-                            }
-                        ).execute()
+                        supabase.table("material_requests") \
+                            .update({
+                                "status": "DELIVERED",
+                                "delivered_at": datetime.utcnow().isoformat()
+                            }) \
+                            .eq("id", r["request_id"]) \
+                            .execute()
                         st.rerun()
 
 
@@ -137,5 +136,6 @@ elif mode == "📜 History":
         ], use_container_width=True)
     else:
         st.info("No history found")
+
 
 
