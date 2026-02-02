@@ -1,141 +1,124 @@
 import streamlit as st
 from supabase import create_client
 from datetime import datetime
-import pandas as pd
 
-# ----------------------
-# CONFIG
-# ----------------------
-st.set_page_config(page_title="Material Handler System", layout="wide")
-
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]  # ต้องเป็น Service Role
+# ================= CONFIG =================
+SUPABASE_URL = st.secrets["supabase"]["url"]
+SUPABASE_KEY = st.secrets["supabase"]["anon_key"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ----------------------
-# MENU
-# ----------------------
-menu = st.sidebar.radio(
-    "โหมดระบบ",
-    ["🔧 เรียกสายไฟ (Cutting)", "📦 Material Handler", "📜 History"]
+st.set_page_config(
+    page_title="Material Request System",
+    layout="wide"
 )
+mode = st.sidebar.radio(
+    "🧭 Select Mode",
+    ["🔧 Production / Cutting", "📦 Material Handler", "📜 History"]
+)
+if mode == "🔧 Production / Cutting":
+    st.title("🔧 Production – Call Material")
 
-# =====================================================
-# MODE 1 : CUTTING (Call Material)
-# =====================================================
-if menu == "🔧 เรียกสายไฟ (Cutting)":
-    st.header("🔧 เรียกสายไฟเข้าผลิต")
+    machines = supabase.table("machines").select("id, machine_code").execute().data
+    terminals = supabase.table("terminal_groups").select("id, terminal_pair").execute().data
 
-    # --- เลือกเครื่องจักร ---
-    machines = supabase.table("machines").select("machine_code").order("machine_code").execute().data
-    machine_codes = [m["machine_code"] for m in machines]
-
-    if not machine_codes:
-        st.warning("❌ ไม่มีเครื่องจักรในระบบ")
-    else:
-        machine = st.selectbox("เลือกเครื่องจักร", machine_codes)
-
-        # --- เลือก Terminal ---
-        terminals = (
-            supabase
-            .from_("wire_requirements_staging")
-            .select("terminal_pair")
-            .eq("machine_code", machine)
-            .execute()
-            .data
-        )
-        terminal_list = sorted(list({t["terminal_pair"] for t in terminals if t.get("terminal_pair")}))
-        terminal = st.selectbox("เลือกกลุ่ม Terminal", terminal_list)
-
-        # --- ดูรายการสายไฟ ---
-        wires = (
-            supabase
-            .from_("v_cutting_wire_request")
-            .select("*")
-            .eq("machine_code", machine)
-            .eq("terminal_pair", terminal)
-            .execute()
-            .data
-        )
-
-        if not wires:
-            st.warning("ยังไม่มี wire requirement สำหรับเงื่อนไขนี้")
-        else:
-            st.subheader("📋 รายการสายไฟ")
-            df = pd.DataFrame(wires)
-            st.dataframe(df, use_container_width=True)
-
-            # --- ปุ่ม CALL (RPC) ---
-            if st.button("✅ ยืนยันเรียกสายไฟ"):
-                res = supabase.rpc(
-                    "rpc_create_material_request",
-                    {"p_machine_code": machine, "p_terminal_pair": terminal}
-                ).execute()
-
-                if res.error:
-                    st.error(f"❌ เกิดปัญหา: {res.error.message}")
-                    st.write(res.error)
-                else:
-                    st.success("🎉 เรียกสายไฟเรียบร้อย ส่งถึง Material Handler แล้ว")
-                    st.write("📌 Request ID:", res.data)
-
-# =====================================================
-# MODE 2 : MATERIAL HANDLER
-# =====================================================
-elif menu == "📦 Material Handler":
-    st.header("📦 งานรอจ่ายสายไฟ")
-
-    # --- ดึงจาก View ---
-    data = (
-        supabase
-        .from_("v_material_handler_dashboard")
-        .select("*")
-        .order("request_time", desc=True)
-        .execute()
-        .data
+    machine = st.selectbox(
+        "Machine",
+        machines,
+        format_func=lambda x: x["machine_code"]
     )
+
+    terminal = st.selectbox(
+        "Terminal Pair",
+        terminals,
+        format_func=lambda x: x["terminal_pair"]
+    )
+
+    if st.button("📞 Call Material", type="primary"):
+        try:
+            supabase.rpc(
+                "rpc_create_material_request",
+                {
+                    "p_machine_id": machine["id"],
+                    "p_terminal_group_id": terminal["id"]
+                }
+            ).execute()
+
+            st.success("✅ Material request submitted")
+
+        except Exception as e:
+            st.error(f"❌ {e}")
+elif mode == "📦 Material Handler":
+    st.title("📦 Material Handler Dashboard")
+
+    data = supabase.table("v_material_handler_dashboard") \
+        .select("*") \
+        .order("requested_at") \
+        .execute().data
 
     if not data:
-        st.info("🎯 ไม่มีงานรอจ่ายสายไฟ")
+        st.info("No pending requests")
     else:
-        df2 = pd.DataFrame(data)
-        st.dataframe(df2, use_container_width=True)
+        for r in data:
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
 
-        request_ids = sorted({d["request_id"] for d in data})
-        selected = st.selectbox("เลือก Request", request_ids)
+                c1.markdown(f"**Machine**: {r['machine_code']}")
+                c2.markdown(f"**Terminal**: {r['terminal_pair']}")
+                c3.markdown(f"**Status**: `{r['status']}`")
 
-        if st.button("📤 จ่ายสายไฟ"):
-            upd = supabase.table("material_requests") \
-                .update({"status": "ISSUED"}) \
-                .eq("id", selected) \
-                .execute()
+                if r["status"] == "REQUESTED":
+                    if c4.button("🟡 รับงาน", key=f"start_{r['id']}"):
+                        supabase.table("material_requests") \
+                            .update({"status": "IN_PROGRESS"}) \
+                            .eq("id", r["id"]) \
+                            .execute()
+                        st.rerun()
 
-            if upd.error:
-                st.error("❌ ไม่สามารถอัปเดตสถานะได้")
-                st.write(upd.error.message)
-            else:
-                st.success("📦 สถานะจ่ายสายไฟเรียบร้อย")
+                elif r["status"] == "IN_PROGRESS":
+                    if c4.button("✅ ส่งของ", key=f"done_{r['id']}"):
+                        supabase.table("material_requests") \
+                            .update({
+                                "status": "DELIVERED",
+                                "delivered_at": datetime.utcnow().isoformat()
+                            }) \
+                            .eq("id", r["id"]) \
+                            .execute()
+                        st.rerun()
+elif mode == "📜 History":
+    st.title("📜 Material Request History")
 
-# =====================================================
-# MODE 3 : HISTORY
-# =====================================================
-else:
-    st.header("📜 ประวัติการเรียกสายไฟ")
-
-    history = (
-        supabase
-        .from_("material_requests")
-        .select("id, status, created_at")
-        .order("created_at", desc=True)
-        .execute()
-        .data
+    status_filter = st.multiselect(
+        "Status",
+        ["REQUESTED", "IN_PROGRESS", "DELIVERED"],
+        default=["DELIVERED"]
     )
 
-    if not history:
-        st.info("📭 ยังไม่มีประวัติการเรียกสายไฟ")
-    else:
-        df3 = pd.DataFrame(history)
-        st.dataframe(df3, use_container_width=True)
+    query = supabase.table("material_requests") \
+        .select("""
+            id,
+            status,
+            requested_at,
+            delivered_at,
+            machines(machine_code),
+            terminal_groups(terminal_pair)
+        """)
 
-    st.caption(f"🔄 อัปเดตล่าสุด: {datetime.now().strftime('%H:%M:%S')}")
+    if status_filter:
+        query = query.in_("status", status_filter)
+
+    rows = query.order("requested_at", desc=True).execute().data
+
+    if rows:
+        st.dataframe([
+            {
+                "Machine": r["machines"]["machine_code"],
+                "Terminal Pair": r["terminal_groups"]["terminal_pair"],
+                "Status": r["status"],
+                "Requested": r["requested_at"],
+                "Delivered": r["delivered_at"]
+            }
+            for r in rows
+        ], use_container_width=True)
+    else:
+        st.info("No history found")
