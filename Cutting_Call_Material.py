@@ -48,6 +48,7 @@ menu = st.sidebar.selectbox(
         "Request Cable",
         "Material Handler Dashboard",
         "Andon Board",
+        "Andon TV Mode",
         "History"
     ]
 )
@@ -281,6 +282,131 @@ elif menu == "Andon Board":
 
     st.dataframe(pivot_df, use_container_width=True)
 
+# =====================================================
+# ANDON TV MODE (FULLSCREEN FACTORY SCREEN)
+# =====================================================
+elif menu == "Andon TV Mode":
+
+    # ===== Hide Sidebar + Menu =====
+    st.markdown("""
+    <style>
+    [data-testid="stSidebar"] {display:none;}
+    #MainMenu {visibility:hidden;}
+    footer {visibility:hidden;}
+    header {visibility:hidden;}
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ===== Auto Refresh 5 sec =====
+    st_autorefresh(interval=5000, key="tv_refresh")
+
+    st.markdown("""
+    <h1 style='text-align:center;font-size:60px'>
+    🏭 MATERIAL ANDON BOARD
+    </h1>
+    """, unsafe_allow_html=True)
+
+    # ===== Load Data =====
+    res = supabase.table("cable_requests") \
+        .select("*") \
+        .eq("status", "Requested") \
+        .gt("quantity_meter", 0) \
+        .execute()
+
+    df = pd.DataFrame(res.data)
+    df = calc_waiting(df)
+
+    if df.empty:
+        st.markdown("""
+        <h2 style='text-align:center;color:green;font-size:50px'>
+        ✅ NO MATERIAL REQUEST
+        </h2>
+        """, unsafe_allow_html=True)
+        st.stop()
+
+    # ===== KPI =====
+    total = len(df)
+    warn = len(df[df["waiting_min"] > 3])
+    danger = len(df[df["waiting_min"] > 5])
+
+    k1, k2, k3 = st.columns(3)
+
+    k1.markdown(f"""
+    <h1 style='text-align:center;font-size:50px'>
+    🔧 {total}
+    </h1>
+    <h3 style='text-align:center'>Total Request</h3>
+    """, unsafe_allow_html=True)
+
+    k2.markdown(f"""
+    <h1 style='text-align:center;font-size:50px;color:orange'>
+    🟠 {warn}
+    </h1>
+    <h3 style='text-align:center'>Waiting > 3 Min</h3>
+    """, unsafe_allow_html=True)
+
+    k3.markdown(f"""
+    <h1 style='text-align:center;font-size:50px;color:red'>
+    🔴 {danger}
+    </h1>
+    <h3 style='text-align:center'>Waiting > 5 Min</h3>
+    """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ===== MACHINE STATUS BIG CARD =====
+    machine_df = df.groupby("machine_code").agg({
+        "waiting_min": "max"
+    }).reset_index()
+
+    cols = st.columns(4)
+
+    def get_color(wait):
+        if wait > 5:
+            return "red"
+        elif wait > 3:
+            return "orange"
+        return "green"
+
+    for i, row in machine_df.iterrows():
+
+        color = get_color(row["waiting_min"])
+
+        with cols[i % 4]:
+
+            st.markdown(f"""
+            <div style="
+                background:{color};
+                padding:40px;
+                border-radius:20px;
+                text-align:center;
+                color:white;
+                margin-bottom:20px;
+            ">
+                <h2 style="font-size:35px">{row['machine_code']}</h2>
+                <h1 style="font-size:60px">{row['waiting_min']:.1f} นาที</h1>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ===== DETAIL TABLE =====
+    st.markdown("<h2>📦 REQUEST DETAIL</h2>", unsafe_allow_html=True)
+
+    pivot_df = df.groupby([
+        "machine_code",
+        "terminal_pair",
+        "wire_name",
+        "wire_size",
+        "wire_color"
+    ], as_index=False).agg({
+        "quantity_meter": "sum",
+        "waiting_min": "max"
+    })
+
+    st.dataframe(
+        pivot_df,
+        use_container_width=True,
+        height=400
+    )
 
 # =====================================================
 # HISTORY
@@ -297,3 +423,4 @@ elif menu == "History":
     df = pd.DataFrame(res.data)
 
     st.dataframe(df, use_container_width=True)
+
