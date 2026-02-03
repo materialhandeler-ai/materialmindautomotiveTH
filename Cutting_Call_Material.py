@@ -1,5 +1,6 @@
 import streamlit as st
 from supabase import create_client
+from uuid import UUID
 
 # ================= CONFIG =================
 SUPABASE_URL = st.secrets["supabase"]["url"]
@@ -44,14 +45,48 @@ if mode == "🔧 Production / Cutting":
     )
 
     if st.button("📞 Call Material", type="primary"):
-        supabase.rpc(
+        res = supabase.rpc(
             "rpc_create_material_request",
             {
                 "p_machine_id": machine["id"],
                 "p_terminal_group_id": terminal["id"]
             }
         ).execute()
-        st.success("✅ Material request submitted")
+
+        st.session_state["current_request_id"] = res.data
+        st.success(f"✅ Request Created: {res.data}")
+
+    # ===== ADD MATERIAL ITEMS =====
+    if "current_request_id" in st.session_state:
+        st.markdown("---")
+        st.subheader("🧾 Add Wire to Request")
+
+        wire_id_input = st.text_input(
+            "Wire ID (UUID)",
+            placeholder="เช่น 550e8400-e29b-41d4-a716-446655440000"
+        )
+
+        length_input = st.number_input(
+            "Total Length (เมตร)",
+            min_value=0.1,
+            step=0.1
+        )
+
+        if st.button("➕ Add Wire"):
+            try:
+                UUID(wire_id_input)
+
+                supabase.table("material_request_items").insert({
+                    "request_id": st.session_state["current_request_id"],
+                    "wire_id": wire_id_input,
+                    "total_length": length_input,
+                    "is_delivered": False
+                }).execute()
+
+                st.success("✅ Wire added")
+
+            except Exception:
+                st.error("❌ Wire ID ต้องเป็น UUID ที่ถูกต้อง")
 
 # =================================================
 # 📦 MATERIAL HANDLER
