@@ -2,107 +2,80 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client
 
-# ================= CONFIG =================
-supabase = create_client(
-    st.secrets["supabase"]["url"],
-    st.secrets["supabase"]["anon_key"]
-)
+# ================= SUPABASE CONNECT =================
+try:
+    supabase = create_client(
+        st.secrets["supabase"]["url"],
+        st.secrets["supabase"]["anon_key"]
+    )
+except Exception as e:
+    st.error("Supabase connection error")
+    st.stop()
 
 st.set_page_config(page_title="Cable Request PRO", layout="wide")
 
 mode = st.sidebar.radio(
     "Select Mode",
-    ["📥 Upload Master", "🔧 Request Cable", "📦 Material Handler", "📜 History"]
+    ["🔧 Request Cable", "📦 Material Handler", "📜 History"]
 )
-
-# =====================================================
-# 📥 UPLOAD MASTER
-# =====================================================
-if mode == "📥 Upload Master":
-
-    st.title("📥 Upload Master Excel")
-
-    file = st.file_uploader("Upload Excel", type=["xlsx"])
-
-    if file:
-
-        df = pd.read_excel(file)
-
-        required_cols = [
-            "machine_code",
-            "terminal_pair",
-            "wire_name",
-            "wire_size",
-            "wire_color",
-            "quantity_meter"
-        ]
-
-        if not all(c in df.columns for c in required_cols):
-            st.error("Excel format incorrect")
-            st.stop()
-
-        if st.button("Upload"):
-
-            # deactivate old batch
-            supabase.table("master_upload_batches") \
-                .update({"is_active": False}) \
-                .eq("is_active", True) \
-                .execute()
-
-            # create new batch
-            batch = supabase.table("master_upload_batches") \
-                .insert({"is_active": True}) \
-                .execute().data[0]
-
-            batch_id = batch["id"]
-
-            df["batch_id"] = batch_id
-
-            supabase.table("cable_requirement_master") \
-                .insert(df.to_dict("records")) \
-                .execute()
-
-            st.success("Upload complete")
 
 # =====================================================
 # 🔧 REQUEST CABLE
 # =====================================================
-elif mode == "🔧 Request Cable":
+if mode == "🔧 Request Cable":
 
     st.title("🔧 Request Cable")
 
-    machines = supabase.table("v_request_machine").select("*").execute().data
-
-    if not machines:
-        st.warning("No active master")
+    try:
+        res = supabase.table("v_request_machine").select("*").execute()
+        machines = res.data if res.data else []
+    except Exception as e:
+        st.error("Cannot load machine list")
         st.stop()
 
-    machine = st.selectbox(
-        "Machine",
-        [m["machine_code"] for m in machines]
-    )
+    if len(machines) == 0:
+        st.warning("No active master data")
+        st.stop()
 
-    terminals = supabase.table("v_request_terminal") \
-        .select("*") \
-        .eq("machine_code", machine) \
-        .execute().data
+    machine_list = [m["machine_code"] for m in machines]
 
-    terminal = st.selectbox(
-        "Terminal Pair",
-        [t["terminal_pair"] for t in terminals]
-    )
+    machine = st.selectbox("Machine", machine_list)
 
-    if st.button("Call Cable", type="primary"):
+    try:
+        res = (
+            supabase.table("v_request_terminal")
+            .select("*")
+            .eq("machine_code", machine)
+            .execute()
+        )
+        terminals = res.data if res.data else []
+    except:
+        st.error("Cannot load terminal list")
+        st.stop()
 
-        res = supabase.rpc(
-            "rpc_create_cable_request",
-            {
-                "p_machine_code": machine,
-                "p_terminal_pair": terminal
-            }
-        ).execute()
+    if len(terminals) == 0:
+        st.warning("No terminal found")
+        st.stop()
 
-        st.success(f"Request Created: {res.data}")
+    terminal_list = [t["terminal_pair"] for t in terminals]
+
+    terminal = st.selectbox("Terminal Pair", terminal_list)
+
+    if st.button("📞 Call Cable", type="primary"):
+
+        try:
+            res = supabase.rpc(
+                "rpc_create_cable_request",
+                {
+                    "p_machine_code": machine,
+                    "p_terminal_pair": terminal
+                }
+            ).execute()
+
+            st.success(f"Request Created : {res.data}")
+
+        except Exception as e:
+            st.error("Request failed")
 
 # =====================================================
 # 📦 MATERIAL HANDLER
@@ -111,17 +84,24 @@ elif mode == "📦 Material Handler":
 
     st.title("📦 Material Handler Dashboard")
 
-    rows = supabase.table("v_handler_dashboard") \
-        .select("*") \
-        .order("requested_at") \
-        .execute().data
+    try:
+        res = (
+            supabase.table("v_handler_dashboard")
+            .select("*")
+            .order("requested_at")
+            .execute()
+        )
+        rows = res.data if res.data else []
+    except:
+        st.error("Cannot load dashboard")
+        st.stop()
 
-    if not rows:
+    if len(rows) == 0:
         st.info("No pending job")
         st.stop()
 
-    import collections
-    grouped = collections.defaultdict(list)
+    from collections import defaultdict
+    grouped = defaultdict(list)
 
     for r in rows:
         grouped[r["header_id"]].append(r)
@@ -153,9 +133,10 @@ elif mode == "📦 Material Handler":
                 if not checked:
                     all_done = False
 
-            # start button
+            # Start Job
             if head["status"] == "REQUESTED":
-                if st.button("Start Job", key=f"start_{header_id}"):
+
+                if st.button("🟡 Start Job", key=f"start_{header_id}"):
 
                     supabase.rpc(
                         "rpc_handler_start_request",
@@ -164,11 +145,11 @@ elif mode == "📦 Material Handler":
 
                     st.rerun()
 
-            # finish button
+            # Finish Job
             if head["status"] == "IN_PROGRESS":
 
                 if all_done:
-                    if st.button("Finish Delivery", key=f"finish_{header_id}"):
+                    if st.button("✅ Finish Delivery", key=f"finish_{header_id}"):
 
                         supabase.rpc(
                             "rpc_handler_finish_request",
@@ -177,19 +158,28 @@ elif mode == "📦 Material Handler":
 
                         st.rerun()
                 else:
-                    st.warning("Complete all items first")
+                    st.warning("Deliver all items first")
 
 # =====================================================
 # 📜 HISTORY
 # =====================================================
 elif mode == "📜 History":
 
-    st.title("📜 Delivery History")
+    st.title("📜 Request History")
 
-    rows = supabase.table("cable_request_headers") \
-        .select("*") \
-        .order("requested_at", desc=True) \
-        .execute().data
+    try:
+        res = (
+            supabase.table("cable_request_headers")
+            .select("*")
+            .order("requested_at", desc=True)
+            .execute()
+        )
+        rows = res.data if res.data else []
+    except:
+        st.error("Cannot load history")
+        st.stop()
 
     if rows:
-        st.dataframe(rows, use_container_width=True)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+    else:
+        st.info("No history")
