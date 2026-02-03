@@ -68,76 +68,79 @@ if mode == "🔧 Production / Cutting":
 elif mode == "📦 Material Handler":
     st.title("📦 Material Handler Dashboard")
 
-    # ===== LOAD DATA FROM VIEW =====
-    try:
-        rows = (
-            supabase
-            .table("v_material_handler_dashboard")
-            .select("""
-                request_id,
-                machine_code,
-                terminal_pair,
-                status,
-                requested_at
-            """)
-            .order("requested_at")
-            .execute()
-            .data
-        )
-    except Exception as e:
-        st.error("❌ Load dashboard failed")
-        st.stop()
+    rows = (
+        supabase
+        .table("v_material_handler_dashboard")
+        .select("*")
+        .order("requested_at")
+        .execute()
+        .data
+    )
 
     if not rows:
-        st.info("✅ No pending material requests")
-        st.stop()
+        st.info("ไม่มีงานค้าง")
+    else:
+        # group by request_id
+        from collections import defaultdict
+        requests = defaultdict(list)
+        for r in rows:
+            requests[r["request_id"]].append(r)
 
-    # ===== RENDER CARDS =====
-    for r in rows:
-        with st.container(border=True):
-            col1, col2, col3, col4 = st.columns([2, 3, 2, 2])
+        for request_id, items in requests.items():
+            header = items[0]
 
-            col1.markdown(f"**Machine**  \n{r['machine_code']}")
-            col2.markdown(f"**Terminal**  \n{r['terminal_pair']}")
-            col3.markdown(f"**Status**  \n`{r['status']}`")
+            with st.container(border=True):
+                st.markdown(
+                    f"""
+                    **Machine:** {header['machine_code']}  
+                    **Terminal:** {header['terminal_pair']}  
+                    **Status:** `{header['status']}`
+                    """
+                )
 
-            # ================= ACTION =================
-            if r["status"] == "REQUESTED":
-                if col4.button(
-                    "🟡 รับงาน",
-                    key=f"start_{r['request_id']}"
-                ):
-                    try:
-                        supabase.rpc(
-                            "rpc_handler_start_request",
-                            {"p_request_id": r["request_id"]}
-                        ).execute()
+                st.markdown("### 📋 รายการสายไฟ")
+                all_checked = True
 
-                        st.success("รับงานเรียบร้อย")
+                for it in items:
+                    checked = st.checkbox(
+                        f"{it['wire_name']} | {it['wire_size']} | {it['wire_color']} | {it['total_length']} m",
+                        value=it["is_delivered"],
+                        key=f"chk_{it['item_id']}"
+                    )
+
+                    # update item immediately
+                    if checked != it["is_delivered"]:
+                        supabase.table("material_request_items") \
+                            .update({"is_delivered": checked}) \
+                            .eq("id", it["item_id"]) \
+                            .execute()
+
+                    if not checked:
+                        all_checked = False
+
+                # ===== ACTION BUTTON =====
+                if header["status"] == "REQUESTED":
+                    if st.button("🟡 รับงาน", key=f"start_{request_id}"):
+                        supabase.table("material_requests") \
+                            .update({"status": "IN_PROGRESS"}) \
+                            .eq("id", request_id) \
+                            .execute()
                         st.rerun()
 
-                    except Exception as e:
-                        st.error("❌ รับงานไม่สำเร็จ")
+                elif header["status"] == "IN_PROGRESS":
+                    if all_checked:
+                        if st.button("✅ ส่งของ", key=f"done_{request_id}"):
+                            supabase.table("material_requests") \
+                                .update({
+                                    "status": "DELIVERED",
+                                    "delivered_at": datetime.utcnow().isoformat()
+                                }) \
+                                .eq("id", request_id) \
+                                .execute()
+                            st.rerun()
+                    else:
+                        st.warning("⚠️ ต้องเลือกสายไฟครบทุกเส้นก่อนส่งของ")
 
-            elif r["status"] == "IN_PROGRESS":
-                if col4.button(
-                    "✅ ส่งของ",
-                    key=f"done_{r['request_id']}"
-                ):
-                    try:
-                        supabase.rpc(
-                            "rpc_handler_finish_request",
-                            {"p_request_id": r["request_id"]}
-                        ).execute()
-
-                        st.success("ส่งของเรียบร้อย")
-                        st.rerun()
-
-                    except Exception as e:
-                        st.error("❌ ส่งของไม่สำเร็จ")
-
-            else:
-                col4.markdown("—")
 
 # =================================================
 # 📜 HISTORY
@@ -179,4 +182,5 @@ elif mode == "📜 History":
         ], use_container_width=True)
     else:
         st.info("📭 No history found")
+
 
