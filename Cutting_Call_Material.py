@@ -1,170 +1,121 @@
 import streamlit as st
 from supabase import create_client
+import pandas as pd
+import uuid
+from datetime import datetime
 
-# ================= CONFIG =================
-SUPABASE_URL = st.secrets["supabase"]["url"]
-SUPABASE_KEY = st.secrets["supabase"]["anon_key"]
+# ---------------------------
+# Supabase Config
+# ---------------------------
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-st.set_page_config(
-    page_title="Material Request System",
-    layout="wide"
+st.set_page_config(page_title="Cable Request", layout="wide")
+
+st.title("🔧 Request Cable")
+
+# ---------------------------
+# GET ACTIVE MASTER BATCH
+# ---------------------------
+batch_res = supabase.table("master_upload_batches") \
+    .select("*") \
+    .eq("is_active", True) \
+    .limit(1) \
+    .execute()
+
+if len(batch_res.data) == 0:
+    st.error("No active master batch")
+    st.stop()
+
+active_batch_id = batch_res.data[0]["id"]
+
+# ---------------------------
+# LOAD MASTER DATA
+# ---------------------------
+master_res = supabase.table("cable_requirement_master") \
+    .select("*") \
+    .eq("batch_id", active_batch_id) \
+    .execute()
+
+master_df = pd.DataFrame(master_res.data)
+
+if master_df.empty:
+    st.warning("No master data found")
+    st.stop()
+
+# ---------------------------
+# CREATE WIRE FULL NAME
+# ---------------------------
+master_df["wire_full_name"] = (
+    master_df["wire_name"] + " " +
+    master_df["wire_size"].astype(str) + " " +
+    master_df["wire_color"]
 )
 
-# ================= MODE =================
-mode = st.sidebar.radio(
-    "Select Mode",
-    ["🔧 Request Cable", "📦 Material Handler", "📜 History"]
+# ---------------------------
+# SELECT MACHINE
+# ---------------------------
+machines = sorted(master_df["machine_code"].unique())
+
+machine = st.selectbox("Machine", machines)
+
+# ---------------------------
+# FILTER TERMINAL BY MACHINE
+# ---------------------------
+machine_df = master_df[master_df["machine_code"] == machine]
+
+terminals = sorted(machine_df["terminal_pair"].unique())
+
+terminal = st.selectbox("Terminal Pair", terminals)
+
+# ---------------------------
+# FILTER BY TERMINAL
+# ---------------------------
+terminal_df = machine_df[machine_df["terminal_pair"] == terminal]
+
+# ---------------------------
+# GROUP WIRE (รวมสายซ้ำ)
+# ---------------------------
+summary_df = (
+    terminal_df
+    .groupby("wire_full_name", as_index=False)["quantity_meter"]
+    .sum()
 )
 
-# =====================================================
-# 🔧 REQUEST CABLE
-# =====================================================
-if mode == "🔧 Request Cable":
+# ---------------------------
+# DASHBOARD
+# ---------------------------
+st.subheader("📊 Required Cable Summary")
 
-    st.title("🔧 Request Cable")
+st.dataframe(summary_df, use_container_width=True)
 
-    # ---- Machine list from master ----
-    machines = (
-        supabase.table("cable_requirement_master")
-        .select("machine_code")
-        .execute()
-        .data
-    )
+total_meter = summary_df["quantity_meter"].sum()
 
-    machine_list = sorted(list(set([m["machine_code"] for m in machines])))
+st.metric("Total Required Meter", f"{total_meter:,.2f} m")
 
-    machine = st.selectbox("Machine", machine_list)
+# ---------------------------
+# REQUEST BUTTON
+# ---------------------------
+if st.button("✅ Request Cable"):
 
-    # ---- Terminal by machine ----
-    terminals = (
-        supabase.table("cable_requirement_master")
-        .select("terminal_pair")
-        .eq("machine_code", machine)
-        .execute()
-        .data
-    )
+    request_rows = []
 
-    terminal_list = sorted(list(set([t["terminal_pair"] for t in terminals])))
+    for _, row in terminal_df.iterrows():
 
-    terminal = st.selectbox("Terminal Pair", terminal_list)
+        request_rows.append({
+            "id": str(uuid.uuid4()),
+            "batch_id": active_batch_id,
+            "machine_code": machine,
+            "terminal_pair": terminal,
+            "wire_name": row["wire_name"],
+            "wire_size": row["wire_size"],
+            "wire_color": row["wire_color"],
+            "quantity_meter": float(row["quantity_meter"]),
+            "requested_at": datetime.utcnow().isoformat()
+        })
 
-    if st.button("📞 Call Cable", type="primary"):
+    supabase.table("cable_requests").insert(request_rows).execute()
 
-        try:
-            supabase.rpc(
-                "rpc_create_material_request",
-                {
-                    "p_machine_code": machine,
-                    "p_terminal_pair": terminal
-                }
-            ).execute()
-
-            st.success("Request created")
-
-        except Exception as e:
-            st.error(e)
-
-# =====================================================
-# 📦 MATERIAL HANDLER
-# =====================================================
-elif mode == "📦 Material Handler":
-
-    st.title("📦 Material Handler Dashboard")
-
-    rows = (
-        supabase.table("v_material_handler_dashboard")
-        .select("*")
-        .execute()
-        .data
-    )
-
-    if not rows:
-        st.info("No pending request")
-        st.stop()
-
-    # group by request
-    from collections import defaultdict
-    requests = defaultdict(list)
-
-    for r in rows:
-        requests[r["request_id"]].append(r)
-
-    for req_id, items in requests.items():
-
-        header = items[0]
-
-        with st.expander(
-            f"Machine: {header['machine_code']} | Terminal: {header['terminal_pair']} | Status: {header['status']}",
-            expanded=False
-        ):
-
-            all_checked = True
-
-            for it in items:
-
-                wire_label = f"{it['wire_name']} {it['wire_size']} {it['wire_color']} ({it['quantity_meter']} m)"
-
-                checked = st.checkbox(
-                    wire_label,
-                    value=it["is_delivered"],
-                    key=f"{it['item_id']}"
-                )
-
-                if checked != it["is_delivered"]:
-                    supabase.table("material_request_items") \
-                        .update({"is_delivered": checked}) \
-                        .eq("id", it["item_id"]) \
-                        .execute()
-
-                if not checked:
-                    all_checked = False
-
-            # ----- START -----
-            if header["status"] == "REQUESTED":
-
-                if st.button("🟡 Start Job", key=f"start_{req_id}"):
-
-                    supabase.rpc(
-                        "rpc_handler_start_request",
-                        {"p_request_id": req_id}
-                    ).execute()
-
-                    st.rerun()
-
-            # ----- FINISH -----
-            elif header["status"] == "IN_PROGRESS":
-
-                if all_checked:
-
-                    if st.button("✅ Deliver", key=f"done_{req_id}"):
-
-                        supabase.rpc(
-                            "rpc_handler_finish_request",
-                            {"p_request_id": req_id}
-                        ).execute()
-
-                        st.rerun()
-                else:
-                    st.warning("Select all cable before deliver")
-
-# =====================================================
-# 📜 HISTORY
-# =====================================================
-elif mode == "📜 History":
-
-    st.title("📜 Request History")
-
-    rows = (
-        supabase.table("material_requests")
-        .select("*")
-        .order("requested_at", desc=True)
-        .execute()
-        .data
-    )
-
-    if not rows:
-        st.info("No history")
-    else:
-        st.dataframe(rows, use_container_width=True)
+    st.success("Cable Requested Successfully")
