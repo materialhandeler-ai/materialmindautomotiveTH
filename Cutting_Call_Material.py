@@ -162,9 +162,9 @@ elif menu == "Material Handler Dashboard":
 
                     wait = row["waiting_min"]
 
-                    if wait > 5:
+                    if wait > 7:
                         icon = "🔴"
-                    elif wait > 3:
+                    elif wait > 4:
                         icon = "🟠"
                     else:
                         icon = "🟢"
@@ -236,8 +236,8 @@ elif menu == "Andon Board":
     col1, col2, col3 = st.columns(3)
 
     col1.metric("🔧 Total Request", len(df))
-    col2.metric("🟠 > 3 นาที", len(df[df["waiting_min"] > 3]))
-    col3.metric("🔴 > 5 นาที", len(df[df["waiting_min"] > 5]))
+    col2.metric("🟠 > 4 นาที", len(df[df["waiting_min"] > 3]))
+    col3.metric("🔴 > 7 นาที", len(df[df["waiting_min"] > 5]))
 
     st.divider()
 
@@ -250,9 +250,9 @@ elif menu == "Andon Board":
     m_cols = st.columns(4)
 
     def get_color(wait):
-        if wait > 5:
+        if wait > 7:
             return "🔴"
-        elif wait > 3:
+        elif wait > 4:
             return "🟠"
         return "🟢"
 
@@ -423,4 +423,5 @@ elif menu == "History":
     df = pd.DataFrame(res.data)
 
     st.dataframe(df, use_container_width=True)
+
 
