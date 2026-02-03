@@ -15,32 +15,19 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 st.set_page_config(page_title="Cable Request System", layout="wide")
 st.title("🔧 Cable Request System")
 
-
 # ======================
-# SAFE DATETIME
-# ======================
-def safe_datetime(df, column):
-    if column not in df.columns:
-        df[column] = None
-
-    df[column] = pd.to_datetime(df[column], errors="coerce")
-    return df
-
-
-# ======================
-# SAFE WAITING
+# SAFE WAITING FUNCTION
 # ======================
 def calc_waiting(df):
 
     if df.empty:
         return df
 
-    df = safe_datetime(df, "requested_at")
+    df["requested_at"] = pd.to_datetime(
+        df["requested_at"], errors="coerce"
+    )
 
     df = df.dropna(subset=["requested_at"])
-
-    if df.empty:
-        return df
 
     now = datetime.now(timezone.utc)
 
@@ -49,25 +36,6 @@ def calc_waiting(df):
     ).dt.total_seconds() / 60
 
     return df
-
-
-# ======================
-# FETCH DATA SAFE
-# ======================
-def fetch_requests(status):
-
-    try:
-        res = supabase.table("cable_requests") \
-            .select("*") \
-            .eq("status", status) \
-            .execute()
-
-        return pd.DataFrame(res.data)
-
-    except Exception as e:
-        st.error("Database Error")
-        st.exception(e)
-        return pd.DataFrame()
 
 
 # ======================
@@ -84,13 +52,18 @@ menu = st.sidebar.selectbox(
 )
 
 # =====================================================
-# REQUEST CABLE
+# REQUEST CABLE PAGE
 # =====================================================
 if menu == "Request Cable":
 
     st.header("🔧 Request Cable")
 
-    df = fetch_requests("Waiting")
+    res = supabase.table("cable_requests") \
+        .select("*") \
+        .eq("status", "Waiting") \
+        .execute()
+
+    df = pd.DataFrame(res.data)
 
     if df.empty:
         st.success("No Waiting Job")
@@ -136,7 +109,6 @@ if menu == "Request Cable":
             st.error("Update Error")
             st.exception(e)
 
-
 # =====================================================
 # MATERIAL HANDLER DASHBOARD
 # =====================================================
@@ -144,7 +116,13 @@ elif menu == "Material Handler Dashboard":
 
     st.header("📦 Material Handler Dashboard")
 
-    df = fetch_requests("Requested")
+    res = supabase.table("cable_requests") \
+        .select("*") \
+        .eq("status", "Requested") \
+        .gt("quantity_meter", 0) \
+        .execute()
+
+    df = pd.DataFrame(res.data)
     df = calc_waiting(df)
 
     if df.empty:
@@ -163,8 +141,6 @@ elif menu == "Material Handler Dashboard":
         "waiting_min": "max"
     })
 
-    pivot_df = pivot_df[pivot_df["quantity_meter"] > 0]
-
     machines = pivot_df["machine_code"].unique()
 
     for machine in machines:
@@ -175,7 +151,9 @@ elif menu == "Material Handler Dashboard":
 
             selected_ids = []
 
-            for terminal in machine_df["terminal_pair"].unique():
+            terminals = machine_df["terminal_pair"].unique()
+
+            for terminal in terminals:
 
                 terminal_df = machine_df[
                     machine_df["terminal_pair"] == terminal
@@ -187,18 +165,22 @@ elif menu == "Material Handler Dashboard":
 
                     wait = row["waiting_min"]
 
-                    icon = "🟢"
                     if wait > 5:
                         icon = "🔴"
                     elif wait > 3:
                         icon = "🟠"
+                    else:
+                        icon = "🟢"
 
                     cable_name = f"{row['wire_name']} {row['wire_size']} {row['wire_color']}"
 
                     col1, col2 = st.columns([1, 6])
 
                     with col1:
-                        checked = st.checkbox("", key=f"{machine}_{i}")
+                        checked = st.checkbox(
+                            "",
+                            key=f"chk_{machine}_{terminal}_{i}"
+                        )
 
                     with col2:
                         st.write(f"{icon} **Cable :** {cable_name}")
@@ -210,27 +192,47 @@ elif menu == "Material Handler Dashboard":
 
                 st.divider()
 
-            if st.button(f"✅ Confirm Delivery - {machine}"):
+            st.info(f"Selected {len(selected_ids)} Job")
+
+            # ===== Confirm Delivery =====
+            if st.button(
+                f"✅ Confirm Delivery - {machine}",
+                key=f"btn_{machine}"
+            ):
 
                 if not selected_ids:
                     st.warning("กรุณาเลือก Cable ก่อน")
+
                 else:
                     try:
+
+                        # 🔥 Flatten ID
+                        flat_ids = []
+                        for item in selected_ids:
+                            if isinstance(item, list):
+                                flat_ids.extend(item)
+                            else:
+                                flat_ids.append(item)
+
+                        flat_ids = list(set(flat_ids))
+
                         supabase.table("cable_requests") \
                             .update({
                                 "status": "Finished",
                                 "delivered_at": datetime.now(timezone.utc).isoformat()
                             }) \
-                            .in_("id", selected_ids) \
+                            .in_("id", flat_ids) \
                             .execute()
 
-                        st.success(f"Delivery Completed for {machine}")
+                        st.success(
+                            f"Delivery Completed {len(flat_ids)} record"
+                        )
+
                         st.rerun()
 
                     except Exception as e:
                         st.error("Delivery Update Error")
                         st.exception(e)
-
 
 # =====================================================
 # ANDON BOARD
@@ -241,7 +243,12 @@ elif menu == "Andon Board":
 
     st.title("🏭 Material Andon Board")
 
-    df = fetch_requests("Requested")
+    res = supabase.table("cable_requests") \
+        .select("*") \
+        .eq("status", "Requested") \
+        .execute()
+
+    df = pd.DataFrame(res.data)
     df = calc_waiting(df)
 
     if df.empty:
@@ -274,6 +281,7 @@ elif menu == "Andon Board":
     for i, row in machine_df.iterrows():
 
         with m_cols[i % 4]:
+
             color = get_color(row["waiting_min"])
 
             st.markdown(f"""
@@ -294,10 +302,7 @@ elif menu == "Andon Board":
         "waiting_min": "max"
     })
 
-    pivot_df = pivot_df[pivot_df["quantity_meter"] > 0]
-
     st.dataframe(pivot_df, use_container_width=True)
-
 
 # =====================================================
 # HISTORY
@@ -306,15 +311,11 @@ elif menu == "History":
 
     st.header("📜 History")
 
-    try:
-        res = supabase.table("cable_requests") \
-            .select("*") \
-            .order("created_at", desc=True) \
-            .execute()
+    res = supabase.table("cable_requests") \
+        .select("*") \
+        .order("created_at", desc=True) \
+        .execute()
 
-        df = pd.DataFrame(res.data)
-        st.dataframe(df, use_container_width=True)
+    df = pd.DataFrame(res.data)
 
-    except Exception as e:
-        st.error("History Load Error")
-        st.exception(e)
+    st.dataframe(df, use_container_width=True)
