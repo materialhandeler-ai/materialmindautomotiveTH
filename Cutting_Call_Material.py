@@ -82,83 +82,55 @@ if mode == "🔧 Request Cable":
 # =====================================================
 elif mode == "📦 Material Handler":
 
-    st.title("📦 Material Handler Dashboard")
+    st.header("📦 Material Handler Dashboard")
 
-    try:
-        res = (
-            supabase.table("v_handler_dashboard")
-            .select("*")
-            .order("requested_at")
-            .execute()
-        )
-        rows = res.data if res.data else []
-    except:
-        st.error("Cannot load dashboard")
-        st.stop()
+    data = supabase.table("v_material_handler_dashboard").select("*").execute().data
 
-    if len(rows) == 0:
+    if not data:
         st.info("No pending job")
         st.stop()
 
-    from collections import defaultdict
-    grouped = defaultdict(list)
+    df = pd.DataFrame(data)
 
-    for r in rows:
-        grouped[r["header_id"]].append(r)
+    for req_id in df["request_id"].unique():
 
-    for header_id, items in grouped.items():
-
-        head = items[0]
+        req_df = df[df["request_id"] == req_id]
 
         with st.expander(
-            f"{head['machine_code']} | {head['terminal_pair']} | {head['status']}"
+            f"Machine : {req_df.iloc[0]['machine_code']} | "
+            f"Terminal : {req_df.iloc[0]['terminal_pair']}"
         ):
 
-            all_done = True
+            for _, row in req_df.iterrows():
 
-            for it in items:
+                col1, col2 = st.columns([3,1])
 
-                checked = st.checkbox(
-                    f"{it['wire_name']} {it['wire_size']} {it['wire_color']} ({it['quantity_meter']}m)",
-                    value=it["is_delivered"],
-                    key=it["item_id"]
-                )
+                with col1:
+                    st.checkbox(
+                        f"{row['wire_code']} | {row['quantity_meter']} m",
+                        key=row["item_id"],
+                        value=row["is_delivered"]
+                    )
 
-                if checked != it["is_delivered"]:
-                    supabase.table("cable_request_items") \
-                        .update({"is_delivered": checked}) \
-                        .eq("id", it["item_id"]) \
-                        .execute()
+            if st.button("✅ Finish Delivery", key=req_id):
 
-                if not checked:
-                    all_done = False
+                # update item delivery
+                for _, row in req_df.iterrows():
 
-            # Start Job
-            if head["status"] == "REQUESTED":
+                    if st.session_state.get(row["item_id"]):
 
-                if st.button("🟡 Start Job", key=f"start_{header_id}"):
+                        supabase.table("material_request_items") \
+                            .update({"is_delivered": True}) \
+                            .eq("id", row["item_id"]) \
+                            .execute()
 
-                    supabase.rpc(
-                        "rpc_handler_start_request",
-                        {"p_header_id": header_id}
-                    ).execute()
+                supabase.rpc(
+                    "rpc_handler_finish_request",
+                    {"p_request_id": req_id}
+                ).execute()
 
-                    st.rerun()
-
-            # Finish Job
-            if head["status"] == "IN_PROGRESS":
-
-                if all_done:
-                    if st.button("✅ Finish Delivery", key=f"finish_{header_id}"):
-
-                        supabase.rpc(
-                            "rpc_handler_finish_request",
-                            {"p_header_id": header_id}
-                        ).execute()
-
-                        st.rerun()
-                else:
-                    st.warning("Deliver all items first")
+                st.success("Delivery Completed")
+                st.rerun()
 
 # =====================================================
 # 📜 HISTORY
@@ -183,3 +155,4 @@ elif mode == "📜 History":
         st.dataframe(pd.DataFrame(rows), use_container_width=True)
     else:
         st.info("No history")
+
