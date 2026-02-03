@@ -1,3 +1,4 @@
+import pandas as pd
 import streamlit as st
 from supabase import create_client
 
@@ -135,4 +136,5 @@ if menu == "History":
     )
 
     st.dataframe(df, use_container_width=True)
+
 
