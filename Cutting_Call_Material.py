@@ -1,98 +1,195 @@
 import streamlit as st
-from supabase import create_client
 import pandas as pd
+from supabase import create_client
 
+# ================= CONFIG =================
 supabase = create_client(
-    st.secrets["SUPABASE_URL"],
-    st.secrets["SUPABASE_KEY"]
+    st.secrets["supabase"]["url"],
+    st.secrets["supabase"]["anon_key"]
 )
 
-mode = st.sidebar.radio("Mode",[
-    "Request",
-    "Handler",
-    "Dashboard",
-    "History"
-])
+st.set_page_config(page_title="Cable Request PRO", layout="wide")
 
-# ============================
-# REQUEST
-# ============================
-if mode=="Request":
+mode = st.sidebar.radio(
+    "Select Mode",
+    ["📥 Upload Master", "🔧 Request Cable", "📦 Material Handler", "📜 History"]
+)
 
-    master = supabase.table("cable_requirement_master").select("*").execute()
-    df = pd.DataFrame(master.data)
+# =====================================================
+# 📥 UPLOAD MASTER
+# =====================================================
+if mode == "📥 Upload Master":
 
-    machines = sorted(df.machine_code.unique())
-    machine = st.selectbox("Machine", machines)
+    st.title("📥 Upload Master Excel")
 
-    terminals = sorted(df[df.machine_code==machine].terminal_pair.unique())
-    terminal = st.selectbox("Terminal", terminals)
+    file = st.file_uploader("Upload Excel", type=["xlsx"])
 
-    if st.button("Call Cable"):
+    if file:
 
-        supabase.rpc(
+        df = pd.read_excel(file)
+
+        required_cols = [
+            "machine_code",
+            "terminal_pair",
+            "wire_name",
+            "wire_size",
+            "wire_color",
+            "quantity_meter"
+        ]
+
+        if not all(c in df.columns for c in required_cols):
+            st.error("Excel format incorrect")
+            st.stop()
+
+        if st.button("Upload"):
+
+            # deactivate old batch
+            supabase.table("master_upload_batches") \
+                .update({"is_active": False}) \
+                .eq("is_active", True) \
+                .execute()
+
+            # create new batch
+            batch = supabase.table("master_upload_batches") \
+                .insert({"is_active": True}) \
+                .execute().data[0]
+
+            batch_id = batch["id"]
+
+            df["batch_id"] = batch_id
+
+            supabase.table("cable_requirement_master") \
+                .insert(df.to_dict("records")) \
+                .execute()
+
+            st.success("Upload complete")
+
+# =====================================================
+# 🔧 REQUEST CABLE
+# =====================================================
+elif mode == "🔧 Request Cable":
+
+    st.title("🔧 Request Cable")
+
+    machines = supabase.table("v_request_machine").select("*").execute().data
+
+    if not machines:
+        st.warning("No active master")
+        st.stop()
+
+    machine = st.selectbox(
+        "Machine",
+        [m["machine_code"] for m in machines]
+    )
+
+    terminals = supabase.table("v_request_terminal") \
+        .select("*") \
+        .eq("machine_code", machine) \
+        .execute().data
+
+    terminal = st.selectbox(
+        "Terminal Pair",
+        [t["terminal_pair"] for t in terminals]
+    )
+
+    if st.button("Call Cable", type="primary"):
+
+        res = supabase.rpc(
             "rpc_create_cable_request",
             {
-                "p_machine":machine,
-                "p_terminal":terminal
+                "p_machine_code": machine,
+                "p_terminal_pair": terminal
             }
         ).execute()
 
-        st.success("Request Sent")
+        st.success(f"Request Created: {res.data}")
 
-# ============================
-# HANDLER
-# ============================
-if mode=="Handler":
+# =====================================================
+# 📦 MATERIAL HANDLER
+# =====================================================
+elif mode == "📦 Material Handler":
 
-    view = supabase.table("v_pending_dashboard").select("*").execute()
-    df = pd.DataFrame(view.data)
+    st.title("📦 Material Handler Dashboard")
 
-    headers = df.header_id.unique()
+    rows = supabase.table("v_handler_dashboard") \
+        .select("*") \
+        .order("requested_at") \
+        .execute().data
 
-    for h in headers:
+    if not rows:
+        st.info("No pending job")
+        st.stop()
 
-        sub = df[df.header_id==h]
+    import collections
+    grouped = collections.defaultdict(list)
 
-        st.subheader(
-            f"{sub.machine_code.iloc[0]} | {sub.terminal_pair.iloc[0]}"
-        )
+    for r in rows:
+        grouped[r["header_id"]].append(r)
 
-        items = supabase.table("cable_request_items").select("*").eq("header_id",h).execute()
-        items_df = pd.DataFrame(items.data)
+    for header_id, items in grouped.items():
 
-        for _,r in items_df.iterrows():
+        head = items[0]
 
-            if st.checkbox(
-                f"{r.wire_name} {r.wire_size} {r.wire_color} {r.quantity_meter}",
-                key=r.id
-            ):
-                supabase.rpc(
-                    "rpc_deliver_cable_item",
-                    {"p_item":r.id}
-                ).execute()
+        with st.expander(
+            f"{head['machine_code']} | {head['terminal_pair']} | {head['status']}"
+        ):
 
-        if st.button("Close Job",key=h):
+            all_done = True
 
-            supabase.rpc(
-                "rpc_close_request",
-                {"p_header":h}
-            ).execute()
+            for it in items:
 
-            st.success("Closed")
+                checked = st.checkbox(
+                    f"{it['wire_name']} {it['wire_size']} {it['wire_color']} ({it['quantity_meter']}m)",
+                    value=it["is_delivered"],
+                    key=it["item_id"]
+                )
 
-# ============================
-# DASHBOARD
-# ============================
-if mode=="Dashboard":
+                if checked != it["is_delivered"]:
+                    supabase.table("cable_request_items") \
+                        .update({"is_delivered": checked}) \
+                        .eq("id", it["item_id"]) \
+                        .execute()
 
-    dash = supabase.table("v_pending_dashboard").select("*").execute()
-    st.dataframe(pd.DataFrame(dash.data))
+                if not checked:
+                    all_done = False
 
-# ============================
-# HISTORY
-# ============================
-if mode=="History":
+            # start button
+            if head["status"] == "REQUESTED":
+                if st.button("Start Job", key=f"start_{header_id}"):
 
-    log = supabase.table("cable_delivery_log").select("*").execute()
-    st.dataframe(pd.DataFrame(log.data))
+                    supabase.rpc(
+                        "rpc_handler_start_request",
+                        {"p_header_id": header_id}
+                    ).execute()
+
+                    st.rerun()
+
+            # finish button
+            if head["status"] == "IN_PROGRESS":
+
+                if all_done:
+                    if st.button("Finish Delivery", key=f"finish_{header_id}"):
+
+                        supabase.rpc(
+                            "rpc_handler_finish_request",
+                            {"p_header_id": header_id}
+                        ).execute()
+
+                        st.rerun()
+                else:
+                    st.warning("Complete all items first")
+
+# =====================================================
+# 📜 HISTORY
+# =====================================================
+elif mode == "📜 History":
+
+    st.title("📜 Delivery History")
+
+    rows = supabase.table("cable_request_headers") \
+        .select("*") \
+        .order("requested_at", desc=True) \
+        .execute().data
+
+    if rows:
+        st.dataframe(rows, use_container_width=True)
