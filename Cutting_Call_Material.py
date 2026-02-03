@@ -1,7 +1,9 @@
 import pandas as pd
 import streamlit as st
 from supabase import create_client
+from datetime import datetime, timezone
 
+# ================= CONFIG =================
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
@@ -11,17 +13,14 @@ st.set_page_config(page_title="Cable Request System", layout="wide")
 
 st.title("🔧 Cable Request System")
 
-# ======================
-# MENU
-# ======================
-
+# ================= MENU =================
 menu = st.sidebar.selectbox(
     "Menu",
     ["Request Cable", "Material Handler Dashboard", "History"]
 )
 
 # =====================================================
-# REQUEST CABLE PAGE
+# REQUEST CABLE
 # =====================================================
 if menu == "Request Cable":
 
@@ -51,7 +50,7 @@ if menu == "Request Cable":
 
     show_df = df_machine[df_machine["terminal_pair"] == terminal]
 
-    st.dataframe(show_df)
+    st.dataframe(show_df, use_container_width=True)
 
     if st.button("🚀 Request Cable"):
 
@@ -69,9 +68,6 @@ if menu == "Request Cable":
 # =====================================================
 # MATERIAL HANDLER DASHBOARD
 # =====================================================
-# =====================================================
-# MATERIAL HANDLER DASHBOARD (PIVOT VERSION)
-# =====================================================
 if menu == "Material Handler Dashboard":
 
     st.header("📦 Material Handler Dashboard")
@@ -85,15 +81,15 @@ if menu == "Material Handler Dashboard":
     )
 
     if df.empty:
-        st.info("No pending job")
+        st.success("No pending job")
         st.stop()
 
-    # ❗ ตัด qty = 0
-    df = df[df["quantity_meter"] > 0]
+    # ================= WAITING TIME =================
+    now = datetime.now(timezone.utc)
+    df["created_at"] = pd.to_datetime(df["created_at"])
+    df["waiting_min"] = (now - df["created_at"]).dt.total_seconds() / 60
 
-    # =========================
-    # ⭐ PIVOT / GROUP DATA
-    # =========================
+    # ================= PIVOT =================
     pivot_df = df.groupby([
         "machine_code",
         "terminal_pair",
@@ -102,14 +98,28 @@ if menu == "Material Handler Dashboard":
         "wire_color"
     ], as_index=False).agg({
         "quantity_meter": "sum",
-        "id": list   # เก็บ id ไว้ใช้ตอน update
+        "waiting_min": "min",
+        "id": list
     })
 
     machines = pivot_df["machine_code"].unique()
 
-    # =========================
-    # LOOP MACHINE
-    # =========================
+    # ================= LOW STOCK ALERT =================
+    low_stock = pd.DataFrame(
+        supabase.table("wire_stock")
+        .select("*")
+        .execute()
+        .data
+    )
+
+    if not low_stock.empty:
+        low_stock = low_stock[low_stock["stock_meter"] < low_stock["safety_level"]]
+
+        if not low_stock.empty:
+            st.error("⚠️ LOW STOCK ALERT")
+            st.dataframe(low_stock, use_container_width=True)
+
+    # ================= LOOP MACHINE =================
     for machine in machines:
 
         machine_df = pivot_df[pivot_df["machine_code"] == machine]
@@ -128,44 +138,79 @@ if menu == "Material Handler Dashboard":
 
                 for i, row in terminal_df.iterrows():
 
+                    wait = row["waiting_min"]
+
+                    # ===== Color Logic =====
+                    if wait >= 5:
+                        icon = "🔴"
+                    elif wait >= 3:
+                        icon = "🟠"
+                    else:
+                        icon = "🟢"
+
                     cable_name = f"{row['wire_name']} {row['wire_size']} {row['wire_color']}"
-                    total_qty = row["quantity_meter"]
+                    qty = row["quantity_meter"]
 
                     col1, col2 = st.columns([1, 6])
 
                     with col1:
-                        checked = st.checkbox("", key=f"chk_{machine}_{i}")
+                        checked = st.checkbox("", key=f"{machine}_{terminal}_{i}")
 
                     with col2:
-                        st.write(f"**Cable :** {cable_name}")
-                        st.write(f"**Qty :** {total_qty:.2f} m")
+                        st.write(f"{icon} **Cable :** {cable_name}")
+                        st.write(f"**Qty :** {qty:.2f} m")
+                        st.write(f"Waiting : {wait:.1f} นาที")
 
-                    # ⭐ เก็บ ID ทั้งหมดใน group
                     if checked:
-                        selected_ids.extend(row["id"])
+                        selected_ids.append(row)
 
                 st.divider()
 
-            # =====================
-            # CONFIRM DELIVERY
-            # =====================
+            # ================= CONFIRM DELIVERY =================
             if st.button(f"✅ Confirm Delivery - {machine}", key=f"btn_{machine}"):
 
                 if len(selected_ids) == 0:
-                    st.warning("Please select cable first")
+                    st.warning("Select cable first")
                 else:
 
-                    for rid in selected_ids:
-                        supabase.table("cable_requests") \
-                            .update({"status": "Finished"}) \
-                            .eq("id", rid) \
-                            .execute()
+                    for row in selected_ids:
 
-                    st.success(f"Delivery Completed for {machine}")
+                        # -------- Update Request --------
+                        for rid in row["id"]:
+                            supabase.table("cable_requests") \
+                                .update({"status": "Finished"}) \
+                                .eq("id", rid) \
+                                .execute()
+
+                        # -------- Insert Log --------
+                        supabase.table("delivery_logs").insert({
+                            "wire_name": row["wire_name"],
+                            "wire_size": row["wire_size"],
+                            "wire_color": row["wire_color"],
+                            "quantity_meter": row["quantity_meter"],
+                            "handler_name": "PC_HANDLER"
+                        }).execute()
+
+                        # -------- Cut Stock --------
+                        supabase.table("wire_stock") \
+                            .update({
+                                "stock_meter": supabase.rpc(
+                                    "rpc_cut_stock_calc",
+                                    {
+                                        "p_wire_name": row["wire_name"],
+                                        "p_wire_size": row["wire_size"],
+                                        "p_wire_color": row["wire_color"],
+                                        "p_qty": row["quantity_meter"]
+                                    }
+                                )
+                            }).execute()
+
+                    st.success("Delivery Completed")
                     st.rerun()
 
+
 # =====================================================
-# HISTORY PAGE
+# HISTORY
 # =====================================================
 if menu == "History":
 
@@ -180,7 +225,3 @@ if menu == "History":
     )
 
     st.dataframe(df, use_container_width=True)
-
-
-
-
