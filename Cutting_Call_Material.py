@@ -1,13 +1,8 @@
 import streamlit as st
-import pandas as pd
 from supabase import create_client
 
-# ======================
-# SUPABASE CONNECTION
-# ======================
-
-SUPABASE_URL = "YOUR_URL"
-SUPABASE_KEY = "YOUR_KEY"
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -140,3 +135,4 @@ if menu == "History":
     )
 
     st.dataframe(df, use_container_width=True)
+
