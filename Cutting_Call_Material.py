@@ -2,157 +2,141 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client
 
-# ================= SUPABASE CONNECT =================
-try:
-    supabase = create_client(
-        st.secrets["supabase"]["url"],
-        st.secrets["supabase"]["anon_key"]
-    )
-except Exception as e:
-    st.error("Supabase connection error")
-    st.stop()
+# ======================
+# SUPABASE CONNECTION
+# ======================
 
-st.set_page_config(page_title="Cable Request PRO", layout="wide")
+SUPABASE_URL = "YOUR_URL"
+SUPABASE_KEY = "YOUR_KEY"
 
-mode = st.sidebar.radio(
-    "Select Mode",
-    ["🔧 Request Cable", "📦 Material Handler", "📜 History"]
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+st.set_page_config(page_title="Cable Request System", layout="wide")
+
+st.title("🔧 Cable Request System")
+
+# ======================
+# MENU
+# ======================
+
+menu = st.sidebar.selectbox(
+    "Menu",
+    ["Request Cable", "Material Handler Dashboard", "History"]
 )
 
 # =====================================================
-# 🔧 REQUEST CABLE
+# REQUEST CABLE PAGE
 # =====================================================
-if mode == "🔧 Request Cable":
+if menu == "Request Cable":
 
-    st.title("🔧 Request Cable")
+    st.header("🔧 Request Cable")
 
-    try:
-        res = supabase.table("v_request_machine").select("*").execute()
-        machines = res.data if res.data else []
-    except Exception as e:
-        st.error("Cannot load machine list")
+    df = pd.DataFrame(
+        supabase.table("cable_requests")
+        .select("*")
+        .eq("status", "Waiting")
+        .execute()
+        .data
+    )
+
+    if df.empty:
+        st.success("No Waiting Job")
         st.stop()
 
-    if len(machines) == 0:
-        st.warning("No active master data")
-        st.stop()
+    col1, col2 = st.columns(2)
 
-    machine_list = [m["machine_code"] for m in machines]
+    with col1:
+        machine = st.selectbox("Machine", sorted(df["machine_code"].unique()))
 
-    machine = st.selectbox("Machine", machine_list)
+    df_machine = df[df["machine_code"] == machine]
 
-    try:
-        res = (
-            supabase.table("v_request_terminal")
-            .select("*")
-            .eq("machine_code", machine)
+    with col2:
+        terminal = st.selectbox("Terminal Pair", sorted(df_machine["terminal_pair"].unique()))
+
+    show_df = df_machine[df_machine["terminal_pair"] == terminal]
+
+    st.dataframe(show_df)
+
+    if st.button("🚀 Request Cable"):
+
+        supabase.table("cable_requests") \
+            .update({"status": "Requested"}) \
+            .eq("machine_code", machine) \
+            .eq("terminal_pair", terminal) \
+            .eq("status", "Waiting") \
             .execute()
-        )
-        terminals = res.data if res.data else []
-    except:
-        st.error("Cannot load terminal list")
-        st.stop()
 
-    if len(terminals) == 0:
-        st.warning("No terminal found")
-        st.stop()
+        st.success("Request Created")
+        st.rerun()
 
-    terminal_list = [t["terminal_pair"] for t in terminals]
-
-    terminal = st.selectbox("Terminal Pair", terminal_list)
-
-    if st.button("📞 Call Cable", type="primary"):
-
-        try:
-            res = supabase.rpc(
-                "rpc_create_cable_request",
-                {
-                    "p_machine_code": machine,
-                    "p_terminal_pair": terminal
-                }
-            ).execute()
-
-            st.success(f"Request Created : {res.data}")
-
-        except Exception as e:
-            st.error("Request failed")
 
 # =====================================================
-# 📦 MATERIAL HANDLER
+# MATERIAL HANDLER DASHBOARD
 # =====================================================
-elif mode == "📦 Material Handler":
+if menu == "Material Handler Dashboard":
 
     st.header("📦 Material Handler Dashboard")
 
-    data = supabase.table("v_material_handler_dashboard").select("*").execute().data
+    df = pd.DataFrame(
+        supabase.table("cable_requests")
+        .select("*")
+        .eq("status", "Requested")
+        .order("machine_code")
+        .execute()
+        .data
+    )
 
-    if not data:
+    if df.empty:
         st.info("No pending job")
         st.stop()
 
-    df = pd.DataFrame(data)
+    selected_ids = []
 
-    for req_id in df["request_id"].unique():
+    for i, row in df.iterrows():
 
-        req_df = df[df["request_id"] == req_id]
+        col1, col2 = st.columns([1, 6])
 
-        with st.expander(
-            f"Machine : {req_df.iloc[0]['machine_code']} | "
-            f"Terminal : {req_df.iloc[0]['terminal_pair']}"
-        ):
+        with col1:
+            checked = st.checkbox("", key=row["id"])
 
-            for _, row in req_df.iterrows():
+        with col2:
+            st.write(
+                f"""
+                Machine : {row['machine_code']}  
+                Terminal : {row['terminal_pair']}  
+                Cable : {row['wire_name']} {row['wire_size']} {row['wire_color']}  
+                Qty : {row['quantity_meter']} m
+                """
+            )
 
-                col1, col2 = st.columns([3,1])
+        if checked:
+            selected_ids.append(row["id"])
 
-                with col1:
-                    st.checkbox(
-                        f"{row['wire_code']} | {row['quantity_meter']} m",
-                        key=row["item_id"],
-                        value=row["is_delivered"]
-                    )
+    if st.button("✅ Mark as Finished"):
 
-            if st.button("✅ Finish Delivery", key=req_id):
+        for rid in selected_ids:
+            supabase.table("cable_requests") \
+                .update({"status": "Finished"}) \
+                .eq("id", rid) \
+                .execute()
 
-                # update item delivery
-                for _, row in req_df.iterrows():
+        st.success("Delivery Finished")
+        st.rerun()
 
-                    if st.session_state.get(row["item_id"]):
-
-                        supabase.table("material_request_items") \
-                            .update({"is_delivered": True}) \
-                            .eq("id", row["item_id"]) \
-                            .execute()
-
-                supabase.rpc(
-                    "rpc_handler_finish_request",
-                    {"p_request_id": req_id}
-                ).execute()
-
-                st.success("Delivery Completed")
-                st.rerun()
 
 # =====================================================
-# 📜 HISTORY
+# HISTORY PAGE
 # =====================================================
-elif mode == "📜 History":
+if menu == "History":
 
-    st.title("📜 Request History")
+    st.header("📜 History")
 
-    try:
-        res = (
-            supabase.table("cable_request_headers")
-            .select("*")
-            .order("requested_at", desc=True)
-            .execute()
-        )
-        rows = res.data if res.data else []
-    except:
-        st.error("Cannot load history")
-        st.stop()
+    df = pd.DataFrame(
+        supabase.table("cable_requests")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
 
-    if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True)
-    else:
-        st.info("No history")
-
+    st.dataframe(df, use_container_width=True)
