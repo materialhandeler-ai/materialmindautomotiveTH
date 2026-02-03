@@ -1,6 +1,5 @@
 import streamlit as st
 from supabase import create_client
-from uuid import UUID
 
 # ================= CONFIG =================
 SUPABASE_URL = st.secrets["supabase"]["url"]
@@ -8,182 +7,164 @@ SUPABASE_KEY = st.secrets["supabase"]["anon_key"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-st.set_page_config(page_title="Material Request System", layout="wide")
+st.set_page_config(
+    page_title="Material Request System",
+    layout="wide"
+)
 
 # ================= MODE =================
 mode = st.sidebar.radio(
-    "🧭 Select Mode",
-    ["🔧 Production / Cutting", "📦 Material Handler", "📜 History"]
+    "Select Mode",
+    ["🔧 Request Cable", "📦 Material Handler", "📜 History"]
 )
 
-# =================================================
-# 🔧 PRODUCTION / CUTTING
-# =================================================
-if mode == "🔧 Production / Cutting":
-    st.title("🔧 Production – Call Material")
+# =====================================================
+# 🔧 REQUEST CABLE
+# =====================================================
+if mode == "🔧 Request Cable":
 
-    machines = supabase.table("machines") \
-        .select("id, machine_code") \
-        .order("machine_code") \
-        .execute().data
+    st.title("🔧 Request Cable")
 
-    terminals = supabase.table("terminal_groups") \
-        .select("id, terminal_pair") \
-        .order("terminal_pair") \
-        .execute().data
-
-    machine = st.selectbox(
-        "Machine",
-        machines,
-        format_func=lambda x: x["machine_code"]
+    # ---- Machine list from master ----
+    machines = (
+        supabase.table("cable_requirement_master")
+        .select("machine_code")
+        .execute()
+        .data
     )
 
-    terminal = st.selectbox(
-        "Terminal Pair",
-        terminals,
-        format_func=lambda x: x["terminal_pair"]
+    machine_list = sorted(list(set([m["machine_code"] for m in machines])))
+
+    machine = st.selectbox("Machine", machine_list)
+
+    # ---- Terminal by machine ----
+    terminals = (
+        supabase.table("cable_requirement_master")
+        .select("terminal_pair")
+        .eq("machine_code", machine)
+        .execute()
+        .data
     )
 
-    if st.button("📞 Call Material", type="primary"):
-        res = supabase.rpc(
-            "rpc_create_material_request",
-            {
-                "p_machine_id": machine["id"],
-                "p_terminal_group_id": terminal["id"]
-            }
-        ).execute()
+    terminal_list = sorted(list(set([t["terminal_pair"] for t in terminals])))
 
-        st.session_state["current_request_id"] = res.data
-        st.success(f"✅ Request Created: {res.data}")
+    terminal = st.selectbox("Terminal Pair", terminal_list)
 
-    # ===== ADD MATERIAL ITEMS =====
-    if "current_request_id" in st.session_state:
-        st.markdown("---")
-        st.subheader("🧾 Add Wire to Request")
+    if st.button("📞 Call Cable", type="primary"):
 
-        wire_id_input = st.text_input(
-            "Wire ID (UUID)",
-            placeholder="เช่น 550e8400-e29b-41d4-a716-446655440000"
-        )
+        try:
+            supabase.rpc(
+                "rpc_create_material_request",
+                {
+                    "p_machine_code": machine,
+                    "p_terminal_pair": terminal
+                }
+            ).execute()
 
-        length_input = st.number_input(
-            "Total Length (เมตร)",
-            min_value=0.1,
-            step=0.1
-        )
+            st.success("Request created")
 
-        if st.button("➕ Add Wire"):
-            try:
-                UUID(wire_id_input)
+        except Exception as e:
+            st.error(e)
 
-                supabase.table("material_request_items").insert({
-                    "request_id": st.session_state["current_request_id"],
-                    "wire_id": wire_id_input,
-                    "total_length": length_input,
-                    "is_delivered": False
-                }).execute()
-
-                st.success("✅ Wire added")
-
-            except Exception:
-                st.error("❌ Wire ID ต้องเป็น UUID ที่ถูกต้อง")
-
-# =================================================
+# =====================================================
 # 📦 MATERIAL HANDLER
-# =================================================
+# =====================================================
 elif mode == "📦 Material Handler":
+
     st.title("📦 Material Handler Dashboard")
 
-    rows = supabase.table("v_material_handler_dashboard").select("*").execute().data
+    rows = (
+        supabase.table("v_material_handler_dashboard")
+        .select("*")
+        .execute()
+        .data
+    )
 
     if not rows:
-        st.info("ไม่มีงานค้าง")
-    else:
-        from collections import defaultdict
-        grouped = defaultdict(list)
+        st.info("No pending request")
+        st.stop()
 
-        for r in rows:
-            grouped[r["request_id"]].append(r)
+    # group by request
+    from collections import defaultdict
+    requests = defaultdict(list)
 
-        for request_id, items in grouped.items():
-            header = items[0]
+    for r in rows:
+        requests[r["request_id"]].append(r)
 
-            with st.container(border=True):
-                st.markdown(
-                    f"""
-                    **Machine:** {header['machine_code']}  
-                    **Terminal:** {header['terminal_pair']}  
-                    **Status:** `{header['status']}`
-                    """
+    for req_id, items in requests.items():
+
+        header = items[0]
+
+        with st.expander(
+            f"Machine: {header['machine_code']} | Terminal: {header['terminal_pair']} | Status: {header['status']}",
+            expanded=False
+        ):
+
+            all_checked = True
+
+            for it in items:
+
+                wire_label = f"{it['wire_name']} {it['wire_size']} {it['wire_color']} ({it['quantity_meter']} m)"
+
+                checked = st.checkbox(
+                    wire_label,
+                    value=it["is_delivered"],
+                    key=f"{it['item_id']}"
                 )
 
-                all_checked = True
+                if checked != it["is_delivered"]:
+                    supabase.table("material_request_items") \
+                        .update({"is_delivered": checked}) \
+                        .eq("id", it["item_id"]) \
+                        .execute()
 
-                for it in items:
-                    checked = st.checkbox(
-                        f"Wire ID: {it['wire_id']} | Length: {it['total_length']} m",
-                        value=it["is_delivered"],
-                        key=f"chk_{it['item_id']}"
-                    )
+                if not checked:
+                    all_checked = False
 
-                    if checked != it["is_delivered"]:
-                        supabase.table("material_request_items") \
-                            .update({"is_delivered": checked}) \
-                            .eq("id", it["item_id"]) \
-                            .execute()
+            # ----- START -----
+            if header["status"] == "REQUESTED":
 
-                    if not checked:
-                        all_checked = False
+                if st.button("🟡 Start Job", key=f"start_{req_id}"):
 
-                if header["status"] == "REQUESTED":
-                    if st.button("🟡 รับงาน", key=f"start_{request_id}"):
+                    supabase.rpc(
+                        "rpc_handler_start_request",
+                        {"p_request_id": req_id}
+                    ).execute()
+
+                    st.rerun()
+
+            # ----- FINISH -----
+            elif header["status"] == "IN_PROGRESS":
+
+                if all_checked:
+
+                    if st.button("✅ Deliver", key=f"done_{req_id}"):
+
                         supabase.rpc(
-                            "rpc_handler_start_request",
-                            {"p_request_id": request_id}
+                            "rpc_handler_finish_request",
+                            {"p_request_id": req_id}
                         ).execute()
+
                         st.rerun()
+                else:
+                    st.warning("Select all cable before deliver")
 
-                elif header["status"] == "IN_PROGRESS":
-                    if all_checked:
-                        if st.button("✅ ส่งของ", key=f"done_{request_id}"):
-                            supabase.rpc(
-                                "rpc_handler_finish_request",
-                                {"p_request_id": request_id}
-                            ).execute()
-                            st.rerun()
-                    else:
-                        st.warning("⚠️ ต้องเลือกสายไฟครบทุกเส้นก่อนส่งของ")
-
-# =================================================
+# =====================================================
 # 📜 HISTORY
-# =================================================
+# =====================================================
 elif mode == "📜 History":
-    st.title("📜 Material Request History")
 
-    status_filter = st.multiselect(
-        "Status",
-        ["REQUESTED", "IN_PROGRESS", "DELIVERED"],
-        default=["DELIVERED"]
+    st.title("📜 Request History")
+
+    rows = (
+        supabase.table("material_requests")
+        .select("*")
+        .order("requested_at", desc=True)
+        .execute()
+        .data
     )
 
-    query = supabase.table("material_requests").select(
-        "id,status,requested_at,delivered_at,"
-        "machines(machine_code),"
-        "terminal_groups(terminal_pair)"
-    )
-
-    if status_filter:
-        query = query.in_("status", status_filter)
-
-    rows = query.order("requested_at", desc=True).execute().data
-
-    st.dataframe(
-        [{
-            "Machine": r["machines"]["machine_code"],
-            "Terminal Pair": r["terminal_groups"]["terminal_pair"],
-            "Status": r["status"],
-            "Requested At": r["requested_at"],
-            "Delivered At": r["delivered_at"]
-        } for r in rows],
-        use_container_width=True
-    )
+    if not rows:
+        st.info("No history")
+    else:
+        st.dataframe(rows, use_container_width=True)
