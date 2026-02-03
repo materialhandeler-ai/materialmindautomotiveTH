@@ -69,6 +69,9 @@ if menu == "Request Cable":
 # =====================================================
 # MATERIAL HANDLER DASHBOARD
 # =====================================================
+# =====================================================
+# MATERIAL HANDLER DASHBOARD (PRO UI)
+# =====================================================
 if menu == "Material Handler Dashboard":
 
     st.header("📦 Material Handler Dashboard")
@@ -86,38 +89,68 @@ if menu == "Material Handler Dashboard":
         st.info("No pending job")
         st.stop()
 
-    selected_ids = []
+    # ❗ ตัดรายการ qty = 0
+    df = df[df["quantity_meter"] > 0]
 
-    for i, row in df.iterrows():
+    # ================================
+    # GROUP BY MACHINE
+    # ================================
+    machines = df["machine_code"].unique()
 
-        col1, col2 = st.columns([1, 6])
+    for machine in machines:
 
-        with col1:
-            checked = st.checkbox("", key=row["id"])
+        machine_df = df[df["machine_code"] == machine]
 
-        with col2:
-            st.write(
-                f"""
-                Machine : {row['machine_code']}  
-                Terminal : {row['terminal_pair']}  
-                Cable : {row['wire_name']} {row['wire_size']} {row['wire_color']}  
-                Qty : {row['quantity_meter']} m
-                """
-            )
+        # ⭐ Dropdown style
+        with st.expander(f"🏭 Machine : {machine}", expanded=True):
 
-        if checked:
-            selected_ids.append(row["id"])
+            selected_ids = []
 
-    if st.button("✅ Mark as Finished"):
+            terminals = machine_df["terminal_pair"].unique()
 
-        for rid in selected_ids:
-            supabase.table("cable_requests") \
-                .update({"status": "Finished"}) \
-                .eq("id", rid) \
-                .execute()
+            for terminal in terminals:
 
-        st.success("Delivery Finished")
-        st.rerun()
+                terminal_df = machine_df[machine_df["terminal_pair"] == terminal]
+
+                st.markdown(f"### 🔌 Terminal : {terminal}")
+
+                for i, row in terminal_df.iterrows():
+
+                    col1, col2 = st.columns([1, 6])
+
+                    with col1:
+                        checked = st.checkbox("", key=f"chk_{row['id']}")
+
+                    with col2:
+                        st.write(
+                            f"""
+**Cable :** {row['wire_name']} {row['wire_size']} {row['wire_color']}  
+**Qty :** {row['quantity_meter']:.2f} m
+"""
+                        )
+
+                    if checked:
+                        selected_ids.append(row["id"])
+
+                st.divider()
+
+            # =====================
+            # CONFIRM BUTTON PER MACHINE
+            # =====================
+            if st.button(f"✅ Confirm Delivery - {machine}", key=f"btn_{machine}"):
+
+                if len(selected_ids) == 0:
+                    st.warning("Please select cable first")
+                else:
+
+                    for rid in selected_ids:
+                        supabase.table("cable_requests") \
+                            .update({"status": "Finished"}) \
+                            .eq("id", rid) \
+                            .execute()
+
+                    st.success(f"Delivery Completed for {machine}")
+                    st.rerun()
 
 
 # =====================================================
@@ -136,5 +169,6 @@ if menu == "History":
     )
 
     st.dataframe(df, use_container_width=True)
+
 
 
