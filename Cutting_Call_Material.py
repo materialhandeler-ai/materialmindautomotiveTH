@@ -1,6 +1,5 @@
 import streamlit as st
 from supabase import create_client
-from datetime import datetime
 
 # ================= CONFIG =================
 SUPABASE_URL = st.secrets["supabase"]["url"]
@@ -8,12 +7,9 @@ SUPABASE_KEY = st.secrets["supabase"]["anon_key"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-st.set_page_config(
-    page_title="Material Request System",
-    layout="wide"
-)
+st.set_page_config(page_title="Material Request System", layout="wide")
 
-# ================= MODE SELECT =================
+# ================= MODE =================
 mode = st.sidebar.radio(
     "🧭 Select Mode",
     ["🔧 Production / Cutting", "📦 Material Handler", "📜 History"]
@@ -48,45 +44,33 @@ if mode == "🔧 Production / Cutting":
     )
 
     if st.button("📞 Call Material", type="primary"):
-        try:
-            supabase.rpc(
-                "rpc_create_material_request",
-                {
-                    "p_machine_id": machine["id"],
-                    "p_terminal_group_id": terminal["id"]
-                }
-            ).execute()
-
-            st.success("✅ Material request submitted")
-
-        except Exception as e:
-            st.error(f"❌ {e}")
+        supabase.rpc(
+            "rpc_create_material_request",
+            {
+                "p_machine_id": machine["id"],
+                "p_terminal_group_id": terminal["id"]
+            }
+        ).execute()
+        st.success("✅ Material request submitted")
 
 # =================================================
-# 📦 MATERIAL HANDLER DASHBOARD
+# 📦 MATERIAL HANDLER
 # =================================================
 elif mode == "📦 Material Handler":
     st.title("📦 Material Handler Dashboard")
 
-    rows = (
-        supabase
-        .table("v_material_handler_dashboard")
-        .select("*")
-        .order("requested_at")
-        .execute()
-        .data
-    )
+    rows = supabase.table("v_material_handler_dashboard").select("*").execute().data
 
     if not rows:
         st.info("ไม่มีงานค้าง")
     else:
-        # group by request_id
         from collections import defaultdict
-        requests = defaultdict(list)
-        for r in rows:
-            requests[r["request_id"]].append(r)
+        grouped = defaultdict(list)
 
-        for request_id, items in requests.items():
+        for r in rows:
+            grouped[r["request_id"]].append(r)
+
+        for request_id, items in grouped.items():
             header = items[0]
 
             with st.container(border=True):
@@ -98,17 +82,15 @@ elif mode == "📦 Material Handler":
                     """
                 )
 
-                st.markdown("### 📋 รายการสายไฟ")
                 all_checked = True
 
                 for it in items:
                     checked = st.checkbox(
-                        f"{it['wire_name']} | {it['wire_size']} | {it['wire_color']} | {it['total_length']} m",
+                        f"Wire ID: {it['wire_id']} | Length: {it['total_length']} m",
                         value=it["is_delivered"],
                         key=f"chk_{it['item_id']}"
                     )
 
-                    # update item immediately
                     if checked != it["is_delivered"]:
                         supabase.table("material_request_items") \
                             .update({"is_delivered": checked}) \
@@ -118,29 +100,24 @@ elif mode == "📦 Material Handler":
                     if not checked:
                         all_checked = False
 
-                # ===== ACTION BUTTON =====
                 if header["status"] == "REQUESTED":
                     if st.button("🟡 รับงาน", key=f"start_{request_id}"):
-                        supabase.table("material_requests") \
-                            .update({"status": "IN_PROGRESS"}) \
-                            .eq("id", request_id) \
-                            .execute()
+                        supabase.rpc(
+                            "rpc_handler_start_request",
+                            {"p_request_id": request_id}
+                        ).execute()
                         st.rerun()
 
                 elif header["status"] == "IN_PROGRESS":
                     if all_checked:
                         if st.button("✅ ส่งของ", key=f"done_{request_id}"):
-                            supabase.table("material_requests") \
-                                .update({
-                                    "status": "DELIVERED",
-                                    "delivered_at": datetime.utcnow().isoformat()
-                                }) \
-                                .eq("id", request_id) \
-                                .execute()
+                            supabase.rpc(
+                                "rpc_handler_finish_request",
+                                {"p_request_id": request_id}
+                            ).execute()
                             st.rerun()
                     else:
                         st.warning("⚠️ ต้องเลือกสายไฟครบทุกเส้นก่อนส่งของ")
-
 
 # =================================================
 # 📜 HISTORY
@@ -154,33 +131,24 @@ elif mode == "📜 History":
         default=["DELIVERED"]
     )
 
-    query = supabase.table("material_requests") \
-        .select("""
-            id,
-            status,
-            requested_at,
-            delivered_at,
-            machines(machine_code),
-            terminal_groups(terminal_pair)
-        """)
+    query = supabase.table("material_requests").select(
+        "id,status,requested_at,delivered_at,"
+        "machines(machine_code),"
+        "terminal_groups(terminal_pair)"
+    )
 
     if status_filter:
         query = query.in_("status", status_filter)
 
     rows = query.order("requested_at", desc=True).execute().data
 
-    if rows:
-        st.dataframe([
-            {
-                "Machine": r["machines"]["machine_code"],
-                "Terminal Pair": r["terminal_groups"]["terminal_pair"],
-                "Status": r["status"],
-                "Requested At": r["requested_at"],
-                "Delivered At": r["delivered_at"]
-            }
-            for r in rows
-        ], use_container_width=True)
-    else:
-        st.info("📭 No history found")
-
-
+    st.dataframe(
+        [{
+            "Machine": r["machines"]["machine_code"],
+            "Terminal Pair": r["terminal_groups"]["terminal_pair"],
+            "Status": r["status"],
+            "Requested At": r["requested_at"],
+            "Delivered At": r["delivered_at"]
+        } for r in rows],
+        use_container_width=True
+    )
