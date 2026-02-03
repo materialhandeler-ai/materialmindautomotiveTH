@@ -24,7 +24,8 @@ def calc_waiting(df):
         return df
 
     df["requested_at"] = pd.to_datetime(
-        df["requested_at"], errors="coerce"
+        df["requested_at"],
+        errors="coerce"
     )
 
     df = df.dropna(subset=["requested_at"])
@@ -52,7 +53,7 @@ menu = st.sidebar.selectbox(
 )
 
 # =====================================================
-# REQUEST CABLE PAGE
+# REQUEST CABLE
 # =====================================================
 if menu == "Request Cable":
 
@@ -91,23 +92,19 @@ if menu == "Request Cable":
 
     if st.button("🚀 Request Cable"):
 
-        try:
-            supabase.table("cable_requests") \
-                .update({
-                    "status": "Requested",
-                    "requested_at": datetime.now(timezone.utc).isoformat()
-                }) \
-                .eq("machine_code", machine) \
-                .eq("terminal_pair", terminal) \
-                .eq("status", "Waiting") \
-                .execute()
+        supabase.table("cable_requests") \
+            .update({
+                "status": "Requested",
+                "requested_at": datetime.now(timezone.utc).isoformat()
+            }) \
+            .eq("machine_code", machine) \
+            .eq("terminal_pair", terminal) \
+            .eq("status", "Waiting") \
+            .execute()
 
-            st.success("Request Created")
-            st.rerun()
+        st.success("Request Created")
+        st.rerun()
 
-        except Exception as e:
-            st.error("Update Error")
-            st.exception(e)
 
 # =====================================================
 # MATERIAL HANDLER DASHBOARD
@@ -150,7 +147,6 @@ elif menu == "Material Handler Dashboard":
         with st.expander(f"🏭 Machine : {machine}", expanded=True):
 
             selected_ids = []
-
             terminals = machine_df["terminal_pair"].unique()
 
             for terminal in terminals:
@@ -179,7 +175,7 @@ elif menu == "Material Handler Dashboard":
                     with col1:
                         checked = st.checkbox(
                             "",
-                            key=f"chk_{machine}_{terminal}_{i}"
+                            key=f"chk_{machine}_{i}"
                         )
 
                     with col2:
@@ -192,8 +188,6 @@ elif menu == "Material Handler Dashboard":
 
                 st.divider()
 
-            st.info(f"Selected {len(selected_ids)} Job")
-
             # ===== Confirm Delivery =====
             if st.button(
                 f"✅ Confirm Delivery - {machine}",
@@ -202,37 +196,19 @@ elif menu == "Material Handler Dashboard":
 
                 if not selected_ids:
                     st.warning("กรุณาเลือก Cable ก่อน")
-
                 else:
-                    try:
 
-                        # 🔥 Flatten ID
-                        flat_ids = []
-                        for item in selected_ids:
-                            if isinstance(item, list):
-                                flat_ids.extend(item)
-                            else:
-                                flat_ids.append(item)
+                    supabase.table("cable_requests") \
+                        .update({
+                            "status": "Finished",
+                            "delivered_at": datetime.now(timezone.utc).isoformat()
+                        }) \
+                        .in_("id", selected_ids) \
+                        .execute()
 
-                        flat_ids = list(set(flat_ids))
+                    st.success(f"Delivery Completed for {machine}")
+                    st.rerun()
 
-                        supabase.table("cable_requests") \
-                            .update({
-                                "status": "Finished",
-                                "delivered_at": datetime.now(timezone.utc).isoformat()
-                            }) \
-                            .in_("id", flat_ids) \
-                            .execute()
-
-                        st.success(
-                            f"Delivery Completed {len(flat_ids)} record"
-                        )
-
-                        st.rerun()
-
-                    except Exception as e:
-                        st.error("Delivery Update Error")
-                        st.exception(e)
 
 # =====================================================
 # ANDON BOARD
@@ -246,6 +222,7 @@ elif menu == "Andon Board":
     res = supabase.table("cable_requests") \
         .select("*") \
         .eq("status", "Requested") \
+        .gt("quantity_meter", 0) \
         .execute()
 
     df = pd.DataFrame(res.data)
@@ -303,6 +280,7 @@ elif menu == "Andon Board":
     })
 
     st.dataframe(pivot_df, use_container_width=True)
+
 
 # =====================================================
 # HISTORY
