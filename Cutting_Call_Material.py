@@ -4,21 +4,82 @@ from supabase import create_client
 from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
-# ======================
+# ===============================
 # CONFIG
-# ======================
+# ===============================
+st.set_page_config(page_title="Cable Request System", layout="wide")
+
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-st.set_page_config(page_title="Cable Request System", layout="wide")
-
 st.title("🔧 Cable Request System")
 
-# ======================
+
+# ===============================
+# UTILITY FUNCTION
+# ===============================
+
+def load_requests(status):
+    """Load cable requests by status"""
+    try:
+        data = (
+            supabase.table("cable_requests")
+            .select("*")
+            .eq("status", status)
+            .execute()
+            .data
+        )
+        return pd.DataFrame(data)
+    except:
+        return pd.DataFrame()
+
+
+def calc_waiting(df):
+    """Calculate waiting time"""
+    if df.empty:
+        return df
+
+    df["requested_at"] = pd.to_datetime(df["requested_at"])
+    now = datetime.now(timezone.utc)
+
+    df["waiting_min"] = (
+        now - df["requested_at"]
+    ).dt.total_seconds() / 60
+
+    return df
+
+
+def pivot_cable(df):
+    """Group cable same spec"""
+    if df.empty:
+        return df
+
+    return df.groupby([
+        "machine_code",
+        "terminal_pair",
+        "wire_name",
+        "wire_size",
+        "wire_color"
+    ], as_index=False).agg({
+        "quantity_meter": "sum",
+        "id": list,
+        "waiting_min": "max"
+    })
+
+
+def waiting_icon(wait):
+    if wait > 5:
+        return "🔴"
+    elif wait > 3:
+        return "🟠"
+    return "🟢"
+
+
+# ===============================
 # MENU
-# ======================
+# ===============================
 menu = st.sidebar.selectbox(
     "Menu",
     [
@@ -30,19 +91,13 @@ menu = st.sidebar.selectbox(
 )
 
 # =====================================================
-# REQUEST CABLE PAGE
+# REQUEST PAGE
 # =====================================================
 if menu == "Request Cable":
 
     st.header("🔧 Request Cable")
 
-    df = pd.DataFrame(
-        supabase.table("cable_requests")
-        .select("*")
-        .eq("status", "Waiting")
-        .execute()
-        .data
-    )
+    df = load_requests("Waiting")
 
     if df.empty:
         st.success("No Waiting Job")
@@ -56,7 +111,10 @@ if menu == "Request Cable":
     df_machine = df[df["machine_code"] == machine]
 
     with col2:
-        terminal = st.selectbox("Terminal Pair", sorted(df_machine["terminal_pair"].unique()))
+        terminal = st.selectbox(
+            "Terminal Pair",
+            sorted(df_machine["terminal_pair"].unique())
+        )
 
     show_df = df_machine[df_machine["terminal_pair"] == terminal]
 
@@ -77,6 +135,7 @@ if menu == "Request Cable":
         st.success("Request Created")
         st.rerun()
 
+
 # =====================================================
 # MATERIAL HANDLER DASHBOARD
 # =====================================================
@@ -84,45 +143,17 @@ elif menu == "Material Handler Dashboard":
 
     st.header("📦 Material Handler Dashboard")
 
-    df = pd.DataFrame(
-        supabase.table("cable_requests")
-        .select("*")
-        .eq("status", "Requested")
-        .execute()
-        .data
-    )
+    df = load_requests("Requested")
+    df = calc_waiting(df)
 
     if df.empty:
         st.info("No pending job")
         st.stop()
 
-    df["requested_at"] = pd.to_datetime(df["requested_at"])
-    now = datetime.now(timezone.utc)
-
-    df["waiting_min"] = (
-        now - df["requested_at"]
-    ).dt.total_seconds() / 60
-
-    # =========================
-    # PIVOT DATA
-    # =========================
-    pivot_df = df.groupby([
-        "machine_code",
-        "terminal_pair",
-        "wire_name",
-        "wire_size",
-        "wire_color"
-    ], as_index=False).agg({
-        "quantity_meter": "sum",
-        "id": list,
-        "waiting_min": "max"
-    })
+    pivot_df = pivot_cable(df)
 
     machines = pivot_df["machine_code"].unique()
 
-    # =========================
-    # LOOP MACHINE
-    # =========================
     for machine in machines:
 
         machine_df = pivot_df[pivot_df["machine_code"] == machine]
@@ -135,44 +166,49 @@ elif menu == "Material Handler Dashboard":
 
             for terminal in terminals:
 
-                terminal_df = machine_df[machine_df["terminal_pair"] == terminal]
+                terminal_df = machine_df[
+                    machine_df["terminal_pair"] == terminal
+                ]
 
                 st.markdown(f"### 🔌 Terminal : {terminal}")
 
                 for i, row in terminal_df.iterrows():
 
-                    wait = row["waiting_min"]
+                    icon = waiting_icon(row["waiting_min"])
 
-                    if wait > 5:
-                        icon = "🔴"
-                    elif wait > 3:
-                        icon = "🟠"
-                    else:
-                        icon = "🟢"
-
-                    cable_name = f"{row['wire_name']} {row['wire_size']} {row['wire_color']}"
+                    cable_name = (
+                        f"{row['wire_name']} "
+                        f"{row['wire_size']} "
+                        f"{row['wire_color']}"
+                    )
 
                     col1, col2 = st.columns([1, 6])
 
                     with col1:
-                        checked = st.checkbox("", key=f"chk_{machine}_{i}")
+                        checked = st.checkbox(
+                            "",
+                            key=f"chk_{machine}_{i}"
+                        )
 
                     with col2:
-                        st.write(f"{icon} **Cable :** {cable_name}")
+                        st.write(f"{icon} Cable : {cable_name}")
                         st.write(f"Qty : {row['quantity_meter']:.2f} m")
-                        st.write(f"Waiting : {wait:.1f} นาที")
+                        st.write(
+                            f"Waiting : {row['waiting_min']:.1f} นาที"
+                        )
 
                     if checked:
                         selected_ids.extend(row["id"])
 
                 st.divider()
 
-            # =====================
-            # CONFIRM DELIVERY
-            # =====================
-            if st.button(f"✅ Confirm Delivery - {machine}", key=f"btn_{machine}"):
+            if st.button(
+                f"✅ Confirm Delivery - {machine}",
+                key=f"btn_{machine}"
+            ):
 
                 for rid in selected_ids:
+
                     supabase.table("cable_requests") \
                         .update({
                             "status": "Finished",
@@ -184,6 +220,7 @@ elif menu == "Material Handler Dashboard":
                 st.success(f"Delivery Completed for {machine}")
                 st.rerun()
 
+
 # =====================================================
 # ANDON BOARD
 # =====================================================
@@ -193,70 +230,43 @@ elif menu == "Andon Board":
 
     st.title("🏭 Material Andon Board")
 
-    df = pd.DataFrame(
-        supabase.table("cable_requests")
-        .select("*")
-        .eq("status", "Requested")
-        .execute()
-        .data
-    )
+    df = load_requests("Requested")
+    df = calc_waiting(df)
 
     if df.empty:
         st.success("🟢 No Material Request")
         st.stop()
 
-    df["requested_at"] = pd.to_datetime(df["requested_at"])
-    now = datetime.now(timezone.utc)
-
-    df["waiting_min"] = (
-        now - df["requested_at"]
-    ).dt.total_seconds() / 60
-
-    # ======================
-    # KPI SUMMARY
-    # ======================
+    # KPI
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("🔧 Total Request", len(df))
-    col2.metric("🟠 > 3 นาที", len(df[df["waiting_min"] > 3]))
-    col3.metric("🔴 > 5 นาที", len(df[df["waiting_min"] > 5]))
+    col1.metric("Total Request", len(df))
+    col2.metric("> 3 นาที", len(df[df["waiting_min"] > 3]))
+    col3.metric("> 5 นาที", len(df[df["waiting_min"] > 5]))
 
     st.divider()
 
-    # ======================
-    # MACHINE STATUS
-    # ======================
-    st.subheader("Machine Status")
-
+    # Machine Status
     machine_df = df.groupby("machine_code").agg({
         "waiting_min": "max"
     }).reset_index()
 
     m_cols = st.columns(4)
 
-    def get_color(wait):
-        if wait > 5:
-            return "🔴"
-        elif wait > 3:
-            return "🟠"
-        return "🟢"
-
     for i, row in machine_df.iterrows():
 
         with m_cols[i % 4]:
 
-            color = get_color(row["waiting_min"])
+            icon = waiting_icon(row["waiting_min"])
 
             st.markdown(f"""
             ### {row['machine_code']}
-            ## {color} {row['waiting_min']:.1f} นาที
+            ## {icon} {row['waiting_min']:.1f} นาที
             """)
 
     st.divider()
 
-    # ======================
-    # DETAIL TABLE
-    # ======================
+    # Detail Pivot
     pivot_df = df.groupby([
         "machine_code",
         "terminal_pair",
@@ -270,12 +280,15 @@ elif menu == "Andon Board":
 
     st.dataframe(pivot_df, use_container_width=True)
 
+
 # =====================================================
 # HISTORY
 # =====================================================
 elif menu == "History":
 
     st.header("📜 History")
+
+    df = load_requests(None)
 
     df = pd.DataFrame(
         supabase.table("cable_requests")
