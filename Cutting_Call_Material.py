@@ -61,6 +61,10 @@ menu = st.sidebar.selectbox(
         "Andon Board",
         "Andon TV Mode",
         "History"
+        "— WH SYSTEM —",
+        "WH Request",
+        "WH Handler",
+        "WH Andon Board",
     ]
 )
 
@@ -421,6 +425,168 @@ elif menu == "History":
     df = pd.DataFrame(res.data)
 
     st.dataframe(df, use_container_width=True)
+if menu == "WH Request":
+
+    st.header("🏭 WH Request Material")
+
+    # โหลด master
+    master = supabase.table("wh_master_part") \
+        .select("code,name,location,unit,full_package") \
+        .eq("is_active", True) \
+        .execute()
+
+    df_master = pd.DataFrame(master.data)
+
+    if df_master.empty:
+        st.error("❌ No Master Data")
+        st.stop()
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        part_code = st.selectbox(
+            "Part Code",
+            sorted(df_master["code"].unique())
+        )
+
+    part = df_master[df_master["code"] == part_code].iloc[0]
+
+    with col2:
+        qty = st.number_input(
+            f"Quantity ({part['unit']})",
+            min_value=0.0,
+            step=1.0
+        )
+
+    with col3:
+        location = st.text_input(
+            "Request Location",
+            value=part["location"] if part["location"] != "Not found location" else ""
+        )
+
+    st.info(
+        f"📦 **{part['name']}**  \n"
+        f"📍 Location : {location or '-'}  \n"
+        f"📐 Full Package : {part['full_package']} {part['unit']}"
+    )
+
+    if st.button("🚀 Send WH Request"):
+
+        supabase.table("wh_request").insert({
+            "part_code": part_code,
+            "part_name": part["name"],
+            "request_qty": qty,
+            "unit": part["unit"],
+            "request_location": location,
+            "status": "WAITING",
+            "requested_at": datetime.now(timezone.utc).isoformat()
+        }).execute()
+
+        send_telegram(
+            f"📦 <b>WH REQUEST</b>\n"
+            f"🔢 {part_code}\n"
+            f"📦 {part['name']}\n"
+            f"🔢 Qty : {qty} {part['unit']}\n"
+            f"📍 {location}"
+        )
+
+        st.success("✅ Request Sent")
+        st.rerun()
+elif menu == "WH Handler":
+
+    st.header("📦 WH Handler")
+
+    res = supabase.table("vw_wh_request") \
+        .select("*") \
+        .eq("status", "WAITING") \
+        .execute()
+
+    df = pd.DataFrame(res.data)
+    df = calc_waiting(df)
+
+    if df.empty:
+        st.success("🟢 No Waiting Request")
+        st.stop()
+
+    selected = []
+
+    for _, row in df.iterrows():
+
+        icon = "🔴" if row["waiting_min"] > 7 else "🟠" if row["waiting_min"] > 4 else "🟢"
+
+        col1, col2 = st.columns([1, 6])
+
+        with col1:
+            chk = st.checkbox("", key=row["id"])
+
+        with col2:
+            st.markdown(
+                f"{icon} **{row['part_name']}**  \n"
+                f"Qty : **{row['request_qty']} {row['unit']}**  \n"
+                f"Location : {row['location']}  \n"
+                f"Waiting : {row['waiting_min']:.1f} min"
+            )
+
+        if chk:
+            selected.append(row["id"])
+
+    if st.button("✅ Confirm Pick & Delivery"):
+
+        if not selected:
+            st.warning("กรุณาเลือกอย่างน้อย 1 รายการ")
+        else:
+            supabase.table("wh_request") \
+                .update({
+                    "status": "DELIVERED",
+                    "delivered_at": datetime.now(timezone.utc).isoformat()
+                }) \
+                .in_("id", selected) \
+                .execute()
+
+            send_telegram(
+                f"✅ <b>WH DELIVERY</b>\n"
+                f"📦 Items : {len(selected)}"
+            )
+
+            st.success("Delivery Completed")
+            st.rerun()
+elif menu == "WH Andon Board":
+
+    st_autorefresh(interval=10000, key="wh_andon")
+
+    st.title("🏭 WH ANDON BOARD")
+
+    res = supabase.table("vw_wh_request") \
+        .select("*") \
+        .eq("status", "WAITING") \
+        .execute()
+
+    df = pd.DataFrame(res.data)
+    df = calc_waiting(df)
+
+    if df.empty:
+        st.success("🟢 NO WH REQUEST")
+        st.stop()
+
+    c1, c2, c3 = st.columns(3)
+
+    c1.metric("📦 Total", len(df))
+    c2.metric("🟠 > 4 min", len(df[df["waiting_min"] > 4]))
+    c3.metric("🔴 > 7 min", len(df[df["waiting_min"] > 7]))
+
+    st.divider()
+
+    show = df[[
+        "part_code",
+        "part_name",
+        "request_qty",
+        "unit",
+        "location",
+        "waiting_min"
+    ]]
+
+    st.dataframe(show, use_container_width=True)
+
 
 
 
