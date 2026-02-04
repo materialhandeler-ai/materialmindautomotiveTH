@@ -178,7 +178,7 @@ elif menu == "Material Handler Dashboard":
                 with col2:
                     st.write(f"{icon} **Cable:** {cable}")
                     st.write(f"Qty: {row['quantity_meter']:.2f} m")
-                    st.write(f"Waiting: {wait:.1f} นาที")
+                    st.write(f"Waiting: {wait:.1f} min")
 
                 if checked:
                     selected_ids.extend(row["id"])
@@ -234,8 +234,8 @@ elif menu == "Andon Board":
     col1, col2, col3 = st.columns(3)
 
     col1.metric("🔧 Total Request", len(df))
-    col2.metric("🟠 > 4 นาที", len(df[df["waiting_min"] > 3]))
-    col3.metric("🔴 > 7 นาที", len(df[df["waiting_min"] > 5]))
+    col2.metric("🟠 > 4 min", len(df[df["waiting_min"] > 3]))
+    col3.metric("🔴 > 7 min", len(df[df["waiting_min"] > 5]))
 
     st.divider()
 
@@ -262,7 +262,7 @@ elif menu == "Andon Board":
 
             st.markdown(f"""
             ### {row['machine_code']}
-            ## {color} {row['waiting_min']:.1f} นาที
+            ## {color} {row['waiting_min']:.1f} min
             """)
 
     st.divider()
@@ -324,8 +324,8 @@ elif menu == "Andon TV Mode":
 
     # ===== KPI =====
     total = len(df)
-    warn = len(df[df["waiting_min"] > 3])
-    danger = len(df[df["waiting_min"] > 5])
+    warn = len(df[df["waiting_min"] > 4])
+    danger = len(df[df["waiting_min"] > 7])
 
     k1, k2, k3 = st.columns(3)
 
@@ -340,14 +340,14 @@ elif menu == "Andon TV Mode":
     <h1 style='text-align:center;font-size:50px;color:orange'>
     🟠 {warn}
     </h1>
-    <h3 style='text-align:center'>Waiting > 3 Min</h3>
+    <h3 style='text-align:center'>Waiting > 4 Min</h3>
     """, unsafe_allow_html=True)
 
     k3.markdown(f"""
     <h1 style='text-align:center;font-size:50px;color:red'>
     🔴 {danger}
     </h1>
-    <h3 style='text-align:center'>Waiting > 5 Min</h3>
+    <h3 style='text-align:center'>Waiting 7 Min</h3>
     """, unsafe_allow_html=True)
 
     st.divider()
@@ -360,9 +360,9 @@ elif menu == "Andon TV Mode":
     cols = st.columns(4)
 
     def get_color(wait):
-        if wait > 5:
+        if wait > 7:
             return "red"
-        elif wait > 3:
+        elif wait > 4:
             return "orange"
         return "green"
 
@@ -382,7 +382,7 @@ elif menu == "Andon TV Mode":
                 margin-bottom:20px;
             ">
                 <h2 style="font-size:35px">{row['machine_code']}</h2>
-                <h1 style="font-size:60px">{row['waiting_min']:.1f} นาที</h1>
+                <h1 style="font-size:60px">{row['waiting_min']:.1f} min</h1>
             </div>
             """, unsafe_allow_html=True)
 
@@ -421,6 +421,7 @@ elif menu == "History":
     df = pd.DataFrame(res.data)
 
     st.dataframe(df, use_container_width=True)
+
 
 
 
