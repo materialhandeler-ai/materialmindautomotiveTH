@@ -1,5 +1,6 @@
 import pandas as pd
 import streamlit as st
+import requests
 from supabase import create_client
 from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
@@ -10,10 +11,28 @@ from streamlit_autorefresh import st_autorefresh
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
+TELEGRAM_BOT_TOKEN = st.secrets["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
+
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="Cable Request System", layout="wide")
 st.title("🔧 Cable Request System")
+
+# ======================
+# TELEGRAM FUNCTION
+# ======================
+def send_telegram(message: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except:
+        pass
 
 # ======================
 # SAFE WAITING FUNCTION
@@ -23,21 +42,13 @@ def calc_waiting(df):
     if df.empty:
         return df
 
-    df["requested_at"] = pd.to_datetime(
-        df["requested_at"],
-        errors="coerce"
-    )
-
+    df["requested_at"] = pd.to_datetime(df["requested_at"], errors="coerce")
     df = df.dropna(subset=["requested_at"])
 
     now = datetime.now(timezone.utc)
-
-    df["waiting_min"] = (
-        now - df["requested_at"]
-    ).dt.total_seconds() / 60
+    df["waiting_min"] = (now - df["requested_at"]).dt.total_seconds() / 60
 
     return df
-
 
 # ======================
 # MENU
@@ -88,7 +99,6 @@ if menu == "Request Cable":
         )
 
     show_df = df_machine[df_machine["terminal_pair"] == terminal]
-
     st.dataframe(show_df, use_container_width=True)
 
     if st.button("🚀 Request Cable"):
@@ -103,9 +113,16 @@ if menu == "Request Cable":
             .eq("status", "Waiting") \
             .execute()
 
+        # 🔔 TELEGRAM
+        send_telegram(
+            f"🔧 <b>NEW CABLE REQUEST</b>\n"
+            f"🏭 Machine : <b>{machine}</b>\n"
+            f"🔌 Terminal : <b>{terminal}</b>\n"
+            f"⏱ Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
         st.success("Request Created")
         st.rerun()
-
 
 # =====================================================
 # MATERIAL HANDLER DASHBOARD
@@ -139,61 +156,34 @@ elif menu == "Material Handler Dashboard":
         "waiting_min": "max"
     })
 
-    machines = pivot_df["machine_code"].unique()
-
-    for machine in machines:
+    for machine in pivot_df["machine_code"].unique():
 
         machine_df = pivot_df[pivot_df["machine_code"] == machine]
 
         with st.expander(f"🏭 Machine : {machine}", expanded=True):
 
             selected_ids = []
-            terminals = machine_df["terminal_pair"].unique()
 
-            for terminal in terminals:
+            for _, row in machine_df.iterrows():
 
-                terminal_df = machine_df[
-                    machine_df["terminal_pair"] == terminal
-                ]
+                wait = row["waiting_min"]
+                icon = "🔴" if wait > 7 else "🟠" if wait > 4 else "🟢"
+                cable = f"{row['wire_name']} {row['wire_size']} {row['wire_color']}"
 
-                st.markdown(f"### 🔌 Terminal : {terminal}")
+                col1, col2 = st.columns([1, 6])
 
-                for i, row in terminal_df.iterrows():
+                with col1:
+                    checked = st.checkbox("", key=f"chk_{machine}_{row['id'][0]}")
 
-                    wait = row["waiting_min"]
+                with col2:
+                    st.write(f"{icon} **Cable:** {cable}")
+                    st.write(f"Qty: {row['quantity_meter']:.2f} m")
+                    st.write(f"Waiting: {wait:.1f} นาที")
 
-                    if wait > 7:
-                        icon = "🔴"
-                    elif wait > 4:
-                        icon = "🟠"
-                    else:
-                        icon = "🟢"
+                if checked:
+                    selected_ids.extend(row["id"])
 
-                    cable_name = f"{row['wire_name']} {row['wire_size']} {row['wire_color']}"
-
-                    col1, col2 = st.columns([1, 6])
-
-                    with col1:
-                        checked = st.checkbox(
-                            "",
-                            key=f"chk_{machine}_{i}"
-                        )
-
-                    with col2:
-                        st.write(f"{icon} **Cable :** {cable_name}")
-                        st.write(f"Qty : {row['quantity_meter']:.2f} m")
-                        st.write(f"Waiting : {wait:.1f} นาที")
-
-                    if checked:
-                        selected_ids.extend(row["id"])
-
-                st.divider()
-
-            # ===== Confirm Delivery =====
-            if st.button(
-                f"✅ Confirm Delivery - {machine}",
-                key=f"btn_{machine}"
-            ):
+            if st.button(f"✅ Confirm Delivery - {machine}"):
 
                 if not selected_ids:
                     st.warning("กรุณาเลือก Cable ก่อน")
@@ -207,7 +197,15 @@ elif menu == "Material Handler Dashboard":
                         .in_("id", selected_ids) \
                         .execute()
 
-                    st.success(f"Delivery Completed for {machine}")
+                    # 🔔 TELEGRAM
+                    send_telegram(
+                        f"✅ <b>DELIVERY COMPLETED</b>\n"
+                        f"🏭 Machine : <b>{machine}</b>\n"
+                        f"📦 Items : {len(selected_ids)}\n"
+                        f"⏱ Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+
+                    st.success("Delivery Completed")
                     st.rerun()
 
 
@@ -423,5 +421,6 @@ elif menu == "History":
     df = pd.DataFrame(res.data)
 
     st.dataframe(df, use_container_width=True)
+
 
 
